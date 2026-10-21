@@ -355,6 +355,7 @@ def trocar_senha():
     return render_template('trocar_senha.html')
 
 @app.route('/api/trocar-senha', methods=['POST'])
+@app.route('/api/trocar-senha', methods=['POST'])
 @login_obrigatorio
 def api_trocar_senha():
     nova_senha = request.form.get('nova_senha', '')
@@ -363,8 +364,9 @@ def api_trocar_senha():
     if nova_senha != confirmar:
         return jsonify({'status': 'erro', 'mensagem': 'A confirmação de senha não confere.'})
 
-    if len(nova_senha) != 8 or not re.search(r'[A-Za-z]', nova_senha) or not re.search(r'\d', nova_senha):
-        return jsonify({'status': 'erro', 'mensagem': 'A nova senha deve conter exatamente 8 caracteres, incluindo letras e números.'})
+    # NOVA REGRA: Mínimo de 8 caracteres, contendo letras, números e símbolos (qualquer caractere que não seja letra ou número)
+    if len(nova_senha) < 8 or not re.search(r'[A-Za-z]', nova_senha) or not re.search(r'\d', nova_senha) or not re.search(r'[^A-Za-z0-9]', nova_senha):
+        return jsonify({'status': 'erro', 'mensagem': 'A nova senha deve conter no mínimo 8 caracteres, incluindo letras, números e símbolos.'})
 
     if nova_senha == '123':
         return jsonify({'status': 'erro', 'mensagem': 'A nova senha não pode ser igual à senha padrão.'})
