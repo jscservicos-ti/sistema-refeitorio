@@ -1,0 +1,447 @@
+{% set ocultar_cabecalho = True %}
+{% extends 'base.html' %}
+{% block title %}Registro de Entrada - Refeitório{% endblock %}
+{% block head_extra %}
+<script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+{% endblock %}
+
+{% block content %}
+<div id="dadosTotem"
+     class="h-screen w-screen overflow-hidden flex flex-col"
+     data-colaboradores='{{ colaboradores_fotos|tojson }}'
+     data-url-autenticar="{{ url_for('totem_autenticar_unidade') }}"
+     data-url-cardapio="{{ url_for('totem_cardapio_atual') }}"
+     data-url-identificar="{{ url_for('totem_identificar') }}"
+     data-url-confirmar="{{ url_for('totem_confirmar_entrada') }}">
+
+    <!-- TOPO DO TOTEM -->
+    <div class="bg-tema-primario text-white px-6 py-3 flex items-center justify-between shadow-md">
+        <div class="flex items-center gap-3">
+            {% if cfg_global.logo_path %}
+                <img src="{{ url_for('static', filename=cfg_global.logo_path) }}" class="h-10 w-auto bg-white p-1 rounded">
+            {% else %}
+                <i class="fa-solid fa-utensils text-2xl"></i>
+            {% endif %}
+            <div>
+                <h1 class="font-bold text-lg leading-tight">Registro de Entrada no Refeitório</h1>
+                <p class="text-xs text-white/80">
+                    Unidade: <strong>{{ session.get('totem_unidade_nome', 'Não Selecionada') }}</strong>
+                    <span id="relogioServidor" class="ml-3"></span>
+                </p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button type="button" onclick="abrirModalUnidade()" class="px-4 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-sm font-semibold flex items-center gap-2 transition">
+                <i class="fa-solid fa-building-user"></i> Alterar Unidade
+            </button>
+            <button type="button" onclick="alternarTelaCheia()" class="px-4 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-sm font-semibold flex items-center gap-2 transition">
+                <i class="fa-solid fa-expand"></i> Tela Cheia
+            </button>
+        </div>
+    </div>
+
+    <div class="flex-1 grid grid-cols-1 lg:grid-cols-2 overflow-hidden">
+
+        <!-- METADE ESQUERDA: CÂMERA -->
+        <div class="p-6 flex flex-col justify-center items-center bg-white border-r border-gray-200 overflow-y-auto">
+            <div class="w-full max-w-lg text-center">
+                <span id="badgeRefeicaoAtual" class="inline-block px-4 py-1 rounded-full bg-emerald-100 text-emerald-800 text-sm font-bold mb-2">
+                    Verificando horário de refeição...
+                </span>
+                <h2 class="text-2xl font-bold text-gray-800">Aproxime seu rosto da câmera</h2>
+                <p id="statusReconhecimento" class="text-sm text-gray-500 mt-1">Carregando IA de Reconhecimento...</p>
+            </div>
+
+            <!-- Moldura da Câmera (Com canvas sobreposto para desenhar) -->
+            <div class="relative w-full max-w-lg min-h-[350px] lg:min-h-[450px] bg-gray-900 rounded-3xl overflow-hidden shadow-2xl border-4 border-tema-primario my-6 flex items-center justify-center">
+                <video id="videoCam" autoplay muted playsinline class="absolute inset-0 w-full h-full object-cover"></video>
+                <!-- O canvas é posicionado exatamente em cima do vídeo -->
+                <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full object-cover z-10"></canvas>
+            </div>
+
+            <!-- Campo de CPF -->
+            <form id="formIdentificarCpf" class="w-full max-w-lg space-y-3">
+                <div>
+                    <label class="block text-xs font-bold uppercase text-gray-600 mb-1 text-center">
+                        Em caso de falha da câmera, digite seu CPF abaixo:
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="text" id="inputCpfTotem" maxlength="14" placeholder="000.000.000-00" autocomplete="off"
+                            class="flex-1 px-4 py-3 text-center text-xl font-bold tracking-widest border-2 border-gray-300 rounded-xl focus:border-tema-primario focus:outline-none">
+                        <button type="submit" class="px-6 py-3 rounded-xl btn-tema font-bold shadow-md">
+                            Validar CPF
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <!-- METADE DIREITA: CARDÁPIO -->
+        <div class="p-8 bg-gray-50 flex flex-col justify-between overflow-y-auto">
+            <div>
+                <div class="flex items-center justify-between border-b pb-4 mb-6">
+                    <div>
+                        <h2 class="text-2xl font-extrabold text-tema-primario flex items-center gap-2">
+                            <i class="fa-solid fa-bowl-food"></i> Cardápio do Dia
+                        </h2>
+                        <p id="subtituloCardapio" class="text-sm text-gray-500 mt-0.5">Relação do que está sendo ofertado neste horário</p>
+                    </div>
+                </div>
+
+                <div id="containerCardapioVigente" class="grid grid-cols-1 gap-4">
+                    <!-- Preenchido via AJAX -->
+                </div>
+            </div>
+
+            <div class="mt-6 pt-4 border-t text-xs text-gray-400 flex justify-between">
+                <span>Atualização automática em tempo real</span>
+                <span>Pressione <strong>Enter</strong> para confirmar ou <strong>Backspace</strong> para cancelar</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL CONFIRMAÇÃO -->
+<div id="modalConfirmarColab" class="fixed inset-0 bg-black/75 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden text-center p-8">
+        <div class="mx-auto w-32 h-32 rounded-full overflow-hidden border-4 border-tema-primario shadow-lg mb-4 bg-gray-100 flex items-center justify-center">
+            <img id="imgColabConfirm" src="" alt="Foto" class="w-full h-full object-cover hidden">
+            <i id="iconeSemFoto" class="fa-solid fa-user text-5xl text-gray-400"></i>
+        </div>
+        <span id="badgeRefConfirm" class="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold uppercase"></span>
+        <h3 id="nomeColabConfirm" class="text-2xl font-extrabold text-gray-800 mt-2"></h3>
+        <p id="cpfColabConfirm" class="text-sm text-gray-500 mb-6"></p>
+
+        <div class="bg-gray-50 rounded-2xl p-4 mb-6 border text-sm text-gray-700">
+            Pressione a tecla <kbd class="px-2 py-1 bg-emerald-600 text-white rounded font-bold">ENTER</kbd> para <strong>Confirmar a Entrada</strong>
+            ou <kbd class="px-2 py-1 bg-red-600 text-white rounded font-bold">BACKSPACE</kbd> para <strong>Cancelar</strong>.
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+            <button type="button" onclick="cancelarConfirmacaoEntrada()" class="py-3.5 px-4 rounded-xl bg-red-100 hover:bg-red-200 text-red-700 font-bold text-base transition">
+                <i class="fa-solid fa-delete-left mr-2"></i>Cancelar (Backspace)
+            </button>
+            <button type="button" onclick="executarConfirmacaoEntrada()" class="py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-base shadow-lg transition">
+                <i class="fa-solid fa-check mr-2"></i>Confirmar (Enter)
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="modalUnidadeTotem" class="fixed inset-0 bg-black/75 backdrop-blur-sm {{ 'flex' if not totem_uid else 'hidden' }} items-center justify-center z-40 p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+        <h3 class="text-xl font-bold text-gray-800 mb-1">Selecionar Unidade do Totem</h3>
+        <p class="text-xs text-gray-500 mb-4">Um usuário autorizado da unidade deve validar o login para habilitar o registro.</p>
+        <form id="formAutenticarTotem" class="space-y-3">
+            <div>
+                <label class="text-xs font-bold uppercase text-gray-600">Unidade</label>
+                <select name="unidade_id" required class="w-full px-3 py-2.5 border rounded-lg bg-white">
+                    {% for u in unidades %}
+                        <option value="{{ u.id }}" {{ 'selected' if u.id == totem_uid else '' }}>{{ u.descricao }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="text-xs font-bold uppercase text-gray-600">CPF do Usuário da Unidade</label>
+                <input type="text" name="cpf" required placeholder="000.000.000-00" class="w-full px-3 py-2.5 border rounded-lg">
+            </div>
+            <div>
+                <label class="text-xs font-bold uppercase text-gray-600">Senha</label>
+                <input type="password" name="senha" required placeholder="Senha do usuário" class="w-full px-3 py-2.5 border rounded-lg">
+            </div>
+            <div class="flex justify-end gap-2 pt-2">
+                {% if totem_uid %}
+                <button type="button" onclick="fecharModalUnidade()" class="px-4 py-2 border rounded-lg text-sm">Fechar</button>
+                {% endif %}
+                <button type="submit" class="px-5 py-2.5 rounded-lg btn-tema font-bold">Validar e Iniciar Totem</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+    const totemEl = document.getElementById('dadosTotem');
+    const colaboradoresCadastrados = JSON.parse(totemEl.dataset.colaboradores || '[]');
+    let aguardandoConfirmacao = false;
+    let dadosPendentes = null;
+    let faceMatcher = null;
+
+    function alternarTelaCheia() {
+        if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(() => {}); } 
+        else { document.exitFullscreen().catch(() => {}); }
+    }
+
+    function abrirModalUnidade() { document.getElementById('modalUnidadeTotem').classList.replace('hidden', 'flex'); }
+    function fecharModalUnidade() { document.getElementById('modalUnidadeTotem').classList.replace('flex', 'hidden'); }
+
+    document.getElementById('formAutenticarTotem').addEventListener('submit', function(e) {
+        e.preventDefault();
+        enviarFormularioAjax(this, totemEl.dataset.urlAutenticar, true);
+    });
+
+    async function atualizarCardapioTotem() {
+        try {
+            const r = await fetch(totemEl.dataset.urlCardapio);
+            const d = await r.json();
+            if (d.status !== 'sucesso') return;
+
+            document.getElementById('relogioServidor').innerText = `${d.data_servidor} - ${d.hora_servidor}`;
+            const badgeRef = document.getElementById('badgeRefeicaoAtual');
+            if (d.refeicao) {
+                badgeRef.innerText = `${d.refeicao.descricao} (${d.refeicao.hora_inicio} às ${d.refeicao.hora_fim})`;
+                badgeRef.className = 'inline-block px-4 py-1 rounded-full bg-emerald-100 text-emerald-800 text-sm font-bold mb-2';
+            } else {
+                badgeRef.innerText = 'Fora do horário de refeição no momento';
+                badgeRef.className = 'inline-block px-4 py-1 rounded-full bg-amber-100 text-amber-800 text-sm font-bold mb-2';
+            }
+
+            const box = document.getElementById('containerCardapioVigente');
+            if (!d.cardapio) {
+                box.innerHTML = `<div class="bg-white p-8 rounded-2xl border text-center text-gray-500"><p class="font-semibold">Nenhum cardápio cadastrado para o horário atual (${d.hora_servidor}).</p></div>`;
+                return;
+            }
+            const c = d.cardapio;
+            box.innerHTML = `
+                <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-red-500">
+                    <div class="text-xs font-bold uppercase text-red-600 mb-1">Proteínas</div><div class="text-lg font-bold text-gray-800">${c.proteinas}</div>
+                </div>
+                <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-amber-500">
+                    <div class="text-xs font-bold uppercase text-amber-600 mb-1">Guarnição</div><div class="text-lg font-bold text-gray-800">${c.guarnicao}</div>
+                </div>
+                <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-emerald-500">
+                    <div class="text-xs font-bold uppercase text-emerald-600 mb-1">Saladas</div><div class="text-lg font-bold text-gray-800">${c.saladas}</div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500">
+                        <div class="text-xs font-bold uppercase text-purple-600 mb-1">Sobremesas</div><div class="text-base font-bold text-gray-800">${c.sobremesas}</div>
+                    </div>
+                    <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-blue-500">
+                        <div class="text-xs font-bold uppercase text-blue-600 mb-1">Bebidas</div><div class="text-base font-bold text-gray-800">${c.bebidas}</div>
+                    </div>
+                </div>
+            `;
+        } catch (e) {}
+    }
+    atualizarCardapioTotem();
+    setInterval(atualizarCardapioTotem, 20000);
+
+    async function solicitarIdentificacao({ cpf = '', colaborador_id = '', metodo = 'CPF' }) {
+        if (aguardandoConfirmacao) return;
+        const fd = new FormData();
+        if (cpf) fd.append('cpf', cpf);
+        if (colaborador_id) fd.append('colaborador_id', colaborador_id);
+        fd.append('metodo', metodo);
+
+        const r = await fetch(totemEl.dataset.urlIdentificar, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': obterCsrfToken() },
+            body: fd
+        });
+        const d = await r.json();
+        if (d.status === 'sucesso') {
+            abrirModalConfirmacaoColaborador(d);
+        } else {
+            exibirMensagem('Aviso de Acesso', d.mensagem, 'erro');
+        }
+    }
+
+    document.getElementById('formIdentificarCpf').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const val = document.getElementById('inputCpfTotem').value;
+        if (!val) return;
+        solicitarIdentificacao({ cpf: val, metodo: 'CPF' });
+    });
+
+    function abrirModalConfirmacaoColaborador(dados) {
+        aguardandoConfirmacao = true;
+        dadosPendentes = dados;
+        document.getElementById('nomeColabConfirm').innerText = dados.colaborador.nome;
+        document.getElementById('cpfColabConfirm').innerText = 'CPF: ' + dados.colaborador.cpf;
+        document.getElementById('badgeRefConfirm').innerText = dados.refeicao.descricao;
+
+        const img = document.getElementById('imgColabConfirm');
+        const icone = document.getElementById('iconeSemFoto');
+        if (dados.colaborador.foto_path) {
+            img.src = dados.colaborador.foto_path;
+            img.classList.remove('hidden');
+            icone.classList.add('hidden');
+        } else {
+            img.classList.add('hidden');
+            icone.classList.remove('hidden');
+        }
+
+        document.getElementById('modalConfirmarColab').classList.replace('hidden', 'flex');
+        
+        // Limpa o canvas de detecção ao abrir o modal
+        const canvas = document.getElementById('overlayCanvas');
+        if (canvas) {
+            canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+        }
+    }
+
+    function cancelarConfirmacaoEntrada() {
+        aguardandoConfirmacao = false;
+        dadosPendentes = null;
+        document.getElementById('modalConfirmarColab').classList.replace('flex', 'hidden');
+        document.getElementById('inputCpfTotem').value = '';
+    }
+
+    async function executarConfirmacaoEntrada() {
+        if (!dadosPendentes) return;
+        const temp = dadosPendentes;
+        cancelarConfirmacaoEntrada();
+
+        const fd = new FormData();
+        fd.append('colaborador_id', temp.colaborador.id);
+        fd.append('refeicao_id', temp.refeicao.id);
+        fd.append('metodo', temp.metodo);
+
+        const r = await fetch(totemEl.dataset.urlConfirmar, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': obterCsrfToken() },
+            body: fd
+        });
+        const d = await r.json();
+        exibirMensagem(d.status === 'sucesso' ? 'Entrada Confirmada!' : 'Atenção', d.mensagem, d.status === 'sucesso' ? 'sucesso' : 'erro');
+    }
+
+    window.addEventListener('keydown', function(e) {
+        if (!aguardandoConfirmacao) return;
+        if (e.key === 'Enter') { e.preventDefault(); executarConfirmacaoEntrada(); } 
+        else if (e.key === 'Backspace') { e.preventDefault(); cancelarConfirmacaoEntrada(); }
+    });
+
+    // ----------------------------------------------------
+    // RECONHECIMENTO FACIAL AO VIVO COM FEEDBACK (CANVAS)
+    // ----------------------------------------------------
+    async function iniciarReconhecimentoFacial() {
+        const video = document.getElementById('videoCam');
+        const canvas = document.getElementById('overlayCanvas');
+        const statusEl = document.getElementById('statusReconhecimento');
+        
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            video.srcObject = stream;
+        } catch (err) {
+            statusEl.innerText = 'Câmera indisponível. Utilize a digitação do CPF.';
+            return;
+        }
+
+        try {
+            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+            await Promise.all([
+                faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+            ]);
+
+            const descritores = [];
+            for (const c of colaboradoresCadastrados) {
+                try {
+                    const img = await faceapi.fetchImage('/static/' + c.foto_path);
+                    const det = await faceapi.detectSingleFace(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
+                    if (det) {
+                        // Salva o ID do colaborador e também o Nome para mostrar na tela ao vivo
+                        descritores.push(new faceapi.LabeledFaceDescriptors(`${c.id}|${c.nome}`, [det.descriptor]));
+                    }
+                } catch (e) {}
+            }
+
+            if (descritores.length > 0) {
+                faceMatcher = new faceapi.FaceMatcher(descritores, 0.52);
+                statusEl.innerText = `Reconhecimento facial ativo (${descritores.length} pessoas). Posicione seu rosto na marcação.`;
+
+                video.addEventListener('play', () => {
+                    // Ajusta o canvas para o tamanho exato do vídeo
+                    const displaySize = { width: video.clientWidth, height: video.clientHeight };
+                    faceapi.matchDimensions(canvas, displaySize);
+
+                    setInterval(async () => {
+                        if (aguardandoConfirmacao) return; // Se a tela de Enter/Backspace estiver aberta, para de buscar
+                        
+                        // Detecta o rosto no frame atual
+                        const det = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
+                        
+                        // Limpa o desenho anterior
+                        const ctx = canvas.getContext('2d');
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                        if (det) {
+                            // Redimensiona as coordenadas do rosto para o tamanho do vídeo exibido na tela
+                            const resizedDet = faceapi.resizeResults(det, displaySize);
+                            const box = resizedDet.detection.box;
+                            
+                            // Calcula a área do rosto em relação à área total do vídeo
+                            const boxArea = box.width * box.height;
+                            const videoArea = displaySize.width * displaySize.height;
+                            const proporcaoRosto = boxArea / videoArea;
+
+                            // Se o rosto estiver muito pequeno/longe (ex: ocupa menos de 8% da tela), avisa para aproximar
+                            if (proporcaoRosto < 0.08) {
+                                ctx.strokeStyle = '#ef4444'; // Vermelho
+                                ctx.lineWidth = 4;
+                                ctx.strokeRect(box.x, box.y, box.width, box.height);
+                                
+                                ctx.fillStyle = '#ef4444';
+                                ctx.fillRect(box.x, box.y - 30, box.width, 30);
+                                ctx.fillStyle = '#ffffff';
+                                ctx.font = 'bold 16px Arial';
+                                ctx.fillText('Aproxime o rosto', box.x + 5, box.y - 10);
+                                return; // Para aqui, não tenta identificar quem é ainda
+                            }
+
+                            // Se o tamanho estiver bom, tenta identificar quem é
+                            const match = faceMatcher.findBestMatch(det.descriptor);
+                            
+                            if (match && match.label !== 'unknown') {
+                                // Separamos o ID do Colaborador do Nome (que gravamos juntos lá em cima)
+                                const [colabId, colabNome] = match.label.split('|');
+
+                                // Desenha a caixa verde de SUCESSO
+                                ctx.strokeStyle = '#10b981'; // Verde
+                                ctx.lineWidth = 4;
+                                ctx.strokeRect(box.x, box.y, box.width, box.height);
+                                
+                                ctx.fillStyle = '#10b981';
+                                ctx.fillRect(box.x, box.y - 30, box.width, 30);
+                                ctx.fillStyle = '#ffffff';
+                                ctx.font = 'bold 16px Arial';
+                                ctx.fillText(colabNome, box.x + 5, box.y - 10);
+
+                                // Aguarda meio segundo (só para a pessoa ver que ficou verde e identificou o nome dela) e abre o modal
+                                setTimeout(() => {
+                                    if (!aguardandoConfirmacao) {
+                                        solicitarIdentificacao({ colaborador_id: parseInt(colabId, 10), metodo: 'FACIAL' });
+                                    }
+                                }, 500);
+
+                            } else {
+                                // Desenha caixa amarela de "Rosto não cadastrado"
+                                ctx.strokeStyle = '#f59e0b'; // Amarelo
+                                ctx.lineWidth = 4;
+                                ctx.strokeRect(box.x, box.y, box.width, box.height);
+                                
+                                ctx.fillStyle = '#f59e0b';
+                                ctx.fillRect(box.x, box.y - 30, box.width, 30);
+                                ctx.fillStyle = '#ffffff';
+                                ctx.font = 'bold 16px Arial';
+                                ctx.fillText('Desconhecido', box.x + 5, box.y - 10);
+                            }
+                        }
+                    }, 500); // Roda a detecção a cada meio segundo (500ms) para não travar o PC
+                });
+
+            } else {
+                statusEl.innerText = 'Câmera ativa. Cadastre fotos nos colaboradores para habilitar o reconhecimento automático.';
+            }
+        } catch (e) {
+            statusEl.innerText = 'Câmera ativa. Utilize o CPF caso o reconhecimento demore.';
+        }
+    }
+
+    window.addEventListener('load', iniciarReconhecimentoFacial);
+</script>
+{% endblock %}

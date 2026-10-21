@@ -1,0 +1,991 @@
+{% extends 'base.html' %}
+{% block title %}Módulo Administrativo - Refeitório{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-6"
+     id="rotasAdmin"
+     data-url-usuario="{{ url_for('salvar_usuario') }}"
+     data-url-reset-senha="{{ url_for('resetar_senha_usuario') }}"
+     data-url-refeicao="{{ url_for('salvar_refeicao') }}"
+     data-url-grupo="{{ url_for('salvar_grupo') }}"
+     data-url-colaborador="{{ url_for('salvar_colaborador') }}"
+     data-url-cardapio="{{ url_for('salvar_cardapio') }}"
+     data-url-unidade="{{ url_for('salvar_unidade') }}"
+     data-url-configuracoes="{{ url_for('salvar_configuracoes') }}"
+     data-url-logs="{{ url_for('consultar_logs') }}">
+
+    {% set perms = session.get('permissoes', []) %}
+
+    <!-- ABA: DASHBOARD -->
+    {% if aba == 'dashboard' %}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div class="bg-white p-6 rounded-xl shadow border-l-4 border-tema-primario">
+            <p class="text-sm text-gray-500 font-medium">Unidade Logada</p>
+            <h3 class="text-xl font-bold text-gray-800 mt-1">{{ session.get('unidade_nome') }}</h3>
+        </div>
+        <div class="bg-white p-6 rounded-xl shadow border-l-4 border-emerald-500">
+            <p class="text-sm text-gray-500 font-medium">Refeições Servidas Hoje ({{ hoje }})</p>
+            <h3 class="text-2xl font-bold text-emerald-700 mt-1">{{ resumo_hoje.total_refeicoes }}</h3>
+        </div>
+        <div class="bg-white p-6 rounded-xl shadow border-l-4 border-amber-500">
+            <p class="text-sm text-gray-500 font-medium">Custo Acumulado Hoje</p>
+            <h3 class="text-2xl font-bold text-amber-700 mt-1">R$ {{ "%.2f"|format(resumo_hoje.custo_total) }}</h3>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold mb-4">Acesso Rápido aos Módulos</h2>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <a href="{{ url_for('totem') }}" target="_blank" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2 bg-gray-50">
+                <i class="fa-solid fa-camera text-2xl text-tema-primario"></i>
+                <span class="font-semibold text-sm">Módulo 2: Totem de Entrada</span>
+            </a>
+            {% if 'cad_cardapio' in perms %}
+            <a href="{{ url_for('admin_painel', aba='cardapios') }}" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2">
+                <i class="fa-solid fa-plate-wheat text-2xl text-tema-primario"></i>
+                <span class="font-semibold text-sm">Cadastrar Cardápio</span>
+            </a>
+            {% endif %}
+            {% if 'cad_colaborador' in perms %}
+            <a href="{{ url_for('admin_painel', aba='colaboradores') }}" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2">
+                <i class="fa-solid fa-users text-2xl text-tema-primario"></i>
+                <span class="font-semibold text-sm">Colaboradores e Fotos</span>
+            </a>
+            {% endif %}
+            {% if 'relatorios' in perms %}
+            <a href="{{ url_for('admin_painel', aba='relatorios') }}" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2">
+                <i class="fa-solid fa-file-pdf text-2xl text-tema-primario"></i>
+                <span class="font-semibold text-sm">Relatórios em PDF</span>
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: USUÁRIOS -->
+    {% if aba == 'usuarios' and 'cad_usuario' in perms %}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4" id="tituloFormUsuario">Novo Usuário</h2>
+            <form id="formUsuario" class="space-y-3">
+                <input type="hidden" name="id" id="usr_id">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Nome Completo</label>
+                    <input type="text" name="nome" id="usr_nome" required class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">CPF</label>
+                        <input type="text" name="cpf" id="usr_cpf" required maxlength="14" class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Cargo</label>
+                        <input type="text" name="cargo" id="usr_cargo" required class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
+                    <select name="ativo" id="usr_ativo" class="w-full px-3 py-2 border rounded-lg bg-white">
+                        <option value="1">Sim</option>
+                        <option value="0">Não</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Unidades com Acesso</label>
+                    <div class="max-h-28 overflow-y-auto border rounded-lg p-2 space-y-1">
+                        {% for u in unidades %}
+                        <label class="flex items-center gap-2 text-sm">
+                            <input type="checkbox" name="unidades_ids" value="{{ u.id }}" class="chk-usr-unid">
+                            <span>{{ u.descricao }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Permissões de Acesso</label>
+                    <div class="grid grid-cols-1 gap-1 border rounded-lg p-2 text-sm">
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_usuario" class="chk-perm"> Cadastrar Usuários</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_refeicao" class="chk-perm"> Cadastrar Refeição</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_grupo" class="chk-perm"> Cadastrar Grupos</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_colaborador" class="chk-perm"> Cadastrar Colaboradores</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_cardapio" class="chk-perm"> Cadastrar Cardápio</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_unidade" class="chk-perm"> Cadastrar Unidade</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="relatorios" class="chk-perm"> Acessar Relatórios</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="logs" class="chk-perm"> Acessar Logs</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="configuracoes" class="chk-perm"> Configurações</label>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-500">Nota: Novos usuários são criados com a senha padrão <strong>123</strong>.</p>
+                <div class="flex gap-2 pt-2">
+                    <button type="submit" class="flex-1 py-2.5 rounded-lg btn-tema font-semibold">Salvar Usuário</button>
+                    <button type="button" onclick="limparFormUsuario()" class="px-3 py-2 border rounded-lg text-sm">Limpar</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
+            <h2 class="text-lg font-bold mb-4">Usuários Cadastrados</h2>
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-gray-700 uppercase text-xs">
+                    <tr>
+                        <th class="p-3">Nome / Cargo</th>
+                        <th class="p-3">CPF</th>
+                        <th class="p-3">Unidades</th>
+                        <th class="p-3">Ativo</th>
+                        <th class="p-3 text-right">Ações</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for u in usuarios %}
+                    <tr>
+                        <td class="p-3">
+                            <div class="font-semibold">{{ u.nome }}</div>
+                            <div class="text-xs text-gray-500">{{ u.cargo }}</div>
+                        </td>
+                        <td class="p-3">{{ u.cpf }}</td>
+                        <td class="p-3 text-xs">
+                            {% for un in u.unidades %}
+                                <span class="inline-block bg-gray-100 px-2 py-0.5 rounded mr-1 mb-1">{{ un.descricao }}</span>
+                            {% endfor %}
+                        </td>
+                        <td class="p-3">
+                            <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-emerald-100 text-emerald-700' if u.ativo == 1 else 'bg-red-100 text-red-700' }}">
+                                {{ 'Sim' if u.ativo == 1 else 'Não' }}
+                            </span>
+                        </td>
+                        <td class="p-3 text-right space-x-1 whitespace-nowrap">
+                            <button type="button"
+                                data-id="{{ u.id }}"
+                                data-nome="{{ u.nome }}"
+                                data-cpf="{{ u.cpf }}"
+                                data-cargo="{{ u.cargo }}"
+                                data-ativo="{{ u.ativo }}"
+                                data-unidades='{{ u.unidades_ids|tojson }}'
+                                data-permissoes='{{ u.permissoes|tojson }}'
+                                onclick="editarUsuario(this)"
+                                class="px-2.5 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 text-xs font-semibold">Editar</button>
+                            <button type="button"
+                                data-id="{{ u.id }}"
+                                data-nome="{{ u.nome }}"
+                                onclick="resetarSenha(this)"
+                                class="px-2.5 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100 text-xs font-semibold">Resetar Senha (123)</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: REFEIÇÕES -->
+    {% if aba == 'refeicoes' and 'cad_refeicao' in perms %}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4" id="tituloFormRefeicao">Cadastrar Refeição</h2>
+            <form id="formRefeicao" class="space-y-3">
+                <input type="hidden" name="id" id="ref_id">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Descrição da Refeição</label>
+                    <input type="text" name="descricao" id="ref_descricao" required placeholder="Ex: Almoço, Jantar, Desjejum" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Horário Inicial</label>
+                        <input type="time" name="hora_inicio" id="ref_ini" required class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Horário Final</label>
+                        <input type="time" name="hora_fim" id="ref_fim" required class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Custo por Refeição (R$)</label>
+                        <input type="number" step="0.01" name="custo" id="ref_custo" required placeholder="15.50" class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
+                        <select name="ativo" id="ref_ativo" class="w-full px-3 py-2 border rounded-lg bg-white">
+                            <option value="1">Sim</option>
+                            <option value="0">Não</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Vincular aos Grupos desta Unidade</label>
+                    <div class="max-h-36 overflow-y-auto border rounded-lg p-2 space-y-1">
+                        {% for g in grupos %}
+                        <label class="flex items-center gap-2 text-sm">
+                            <input type="checkbox" name="grupos_ids" value="{{ g.id }}" class="chk-ref-grupo">
+                            <span>{{ g.descricao }}</span>
+                        </label>
+                        {% else %}
+                        <p class="text-xs text-gray-400">Cadastre um grupo primeiro para vincular.</p>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="flex gap-2 pt-2">
+                    <button type="submit" class="flex-1 py-2.5 rounded-lg btn-tema font-semibold">Salvar Refeição</button>
+                    <button type="button" onclick="limparFormRefeicao()" class="px-3 py-2 border rounded-lg text-sm">Limpar</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
+            <h2 class="text-lg font-bold mb-4">Refeições da Unidade ({{ session.get('unidade_nome') }})</h2>
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-xs uppercase">
+                    <tr>
+                        <th class="p-3">Descrição</th>
+                        <th class="p-3">Horário Liberado</th>
+                        <th class="p-3">Custo</th>
+                        <th class="p-3">Grupos Vinculados</th>
+                        <th class="p-3">Ativo</th>
+                        <th class="p-3 text-right">Ação</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for r in refeicoes %}
+                    {% set grps = mapa_ref_grupos.get(r.id, []) %}
+                    <tr>
+                        <td class="p-3 font-semibold">{{ r.descricao }}</td>
+                        <td class="p-3">{{ r.hora_inicio }} às {{ r.hora_fim }}</td>
+                        <td class="p-3">R$ {{ "%.2f"|format(r.custo) }}</td>
+                        <td class="p-3 text-xs">
+                            {% for g in grps %}
+                                <span class="inline-block bg-blue-50 text-blue-700 px-2 py-0.5 rounded mr-1 mb-1">{{ g.nome }}</span>
+                            {% else %}
+                                <span class="text-gray-400">Sem grupo</span>
+                            {% endfor %}
+                        </td>
+                        <td class="p-3">{{ 'Sim' if r.ativo == 1 else 'Não' }}</td>
+                        <td class="p-3 text-right">
+                            <button type="button"
+                                data-id="{{ r.id }}"
+                                data-descricao="{{ r.descricao }}"
+                                data-inicio="{{ r.hora_inicio }}"
+                                data-fim="{{ r.hora_fim }}"
+                                data-custo="{{ r.custo }}"
+                                data-ativo="{{ r.ativo }}"
+                                data-grupos='{{ grps|map(attribute="id")|list|tojson }}'
+                                onclick="editarRefeicao(this)"
+                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: GRUPOS -->
+    {% if aba == 'grupos' and 'cad_grupo' in perms %}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4">Cadastrar Grupo de Refeições</h2>
+            <form id="formGrupo" class="space-y-3">
+                <input type="hidden" name="id" id="grp_id">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Descrição do Grupo</label>
+                    <input type="text" name="descricao" id="grp_descricao" required placeholder="Ex: Plantonistas Diurnos, Administrativo" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
+                    <select name="ativo" id="grp_ativo" class="w-full px-3 py-2 border rounded-lg bg-white">
+                        <option value="1">Sim</option>
+                        <option value="0">Não</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Refeições Liberadas para este Grupo</label>
+                    <div class="max-h-40 overflow-y-auto border rounded-lg p-2 space-y-1">
+                        {% for r in refeicoes %}
+                        <label class="flex items-center gap-2 text-sm">
+                            <input type="checkbox" name="refeicoes_ids" value="{{ r.id }}" class="chk-grp-ref">
+                            <span>{{ r.descricao }} ({{ r.hora_inicio }} - {{ r.hora_fim }})</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-lg btn-tema font-semibold">Salvar Grupo</button>
+            </form>
+        </div>
+
+        <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4">Grupos da Unidade</h2>
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-xs uppercase">
+                    <tr>
+                        <th class="p-3">Grupo</th>
+                        <th class="p-3">Refeições Vinculadas</th>
+                        <th class="p-3">Ativo</th>
+                        <th class="p-3 text-right">Ação</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for g in grupos %}
+                    {% set rfs = mapa_grupo_refs.get(g.id, []) %}
+                    <tr>
+                        <td class="p-3 font-semibold">{{ g.descricao }}</td>
+                        <td class="p-3 text-xs">
+                            {% for r in rfs %}
+                                <span class="inline-block bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded mr-1 mb-1">{{ r.nome }}</span>
+                            {% else %}
+                                <span class="text-gray-400">Nenhuma refeição vinculada</span>
+                            {% endfor %}
+                        </td>
+                        <td class="p-3">{{ 'Sim' if g.ativo == 1 else 'Não' }}</td>
+                        <td class="p-3 text-right">
+                            <button type="button"
+                                data-id="{{ g.id }}"
+                                data-descricao="{{ g.descricao }}"
+                                data-ativo="{{ g.ativo }}"
+                                data-refeicoes='{{ rfs|map(attribute="id")|list|tojson }}'
+                                onclick="editarGrupo(this)"
+                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: COLABORADORES -->
+    {% if aba == 'colaboradores' and 'cad_colaborador' in perms %}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4">Cadastrar Colaborador</h2>
+            <form id="formColaborador" class="space-y-3">
+                <input type="hidden" name="id" id="col_id">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Nome Completo</label>
+                    <input type="text" name="nome" id="col_nome" required class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">CPF</label>
+                    <input type="text" name="cpf" id="col_cpf" required maxlength="14" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Grupo de Refeições</label>
+                    <select name="grupo_id" id="col_grupo" required class="w-full px-3 py-2 border rounded-lg bg-white">
+                        {% for g in grupos %}
+                            <option value="{{ g.id }}">{{ g.descricao }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
+                    <select name="ativo" id="col_ativo" class="w-full px-3 py-2 border rounded-lg bg-white">
+                        <option value="1">Sim</option>
+                        <option value="0">Não</option>
+                    </select>
+                </div>
+                
+                <!-- WEBCAM COM MÁSCARA GUIA -->
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Foto para Reconhecimento Facial</label>
+                    <div class="mt-1 border rounded-xl p-3 bg-gray-50 text-center">
+                        <div class="relative mx-auto max-w-[280px]">
+                            <!-- O canvas ficará oculto até a captura -->
+                            <video id="videoColab" autoplay muted playsinline class="w-full h-56 bg-gray-900 rounded-lg object-cover hidden"></video>
+                            
+                            <!-- Máscara tracejada que fica por cima do vídeo para guiar o enquadramento -->
+                            <div id="guiaCamera" class="hidden absolute inset-0 pointer-events-none flex items-center justify-center">
+                                <div class="w-32 h-40 border-2 border-dashed border-white/70 rounded-[2rem]"></div>
+                                <span class="absolute bottom-2 text-[10px] text-white/80 bg-black/40 px-2 rounded">Enquadre o rosto aqui</span>
+                            </div>
+
+                            <img id="previewColab" class="w-full h-56 bg-gray-200 rounded-lg object-cover hidden shadow-sm border border-gray-300">
+                        </div>
+                        
+                        <canvas id="canvasColab" class="hidden"></canvas>
+                        <input type="hidden" name="foto_b64" id="col_foto_b64">
+                        
+                        <div class="flex flex-wrap gap-2 justify-center mt-3">
+                            <button type="button" id="btnAtivarCam" onclick="ativarCameraColab()" class="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-bold hover:bg-blue-200 transition"><i class="fa-solid fa-camera mr-1"></i> Ligar Câmera</button>
+                            <button type="button" id="btnCapturar" onclick="capturarFotoColab()" class="hidden px-4 py-2 btn-tema rounded-lg text-sm font-bold shadow"><i class="fa-solid fa-camera-retro mr-1"></i> Tirar Foto</button>
+                            <button type="button" id="btnLimparFoto" onclick="limparFotoColab()" class="hidden px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-300 transition"><i class="fa-solid fa-trash mr-1"></i> Descartar</button>
+                        </div>
+                        <p class="text-[10px] text-gray-500 mt-2">O rosto deve preencher quase todo o quadrado guia.</p>
+                    </div>
+                </div>
+
+                <div class="flex gap-2 pt-2">
+                    <button type="submit" class="flex-1 py-2.5 rounded-lg btn-tema font-semibold">Salvar Colaborador</button>
+                    <button type="button" onclick="limparFormColaborador()" class="px-3 py-2 border rounded-lg text-sm">Limpar</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
+            <h2 class="text-lg font-bold mb-4">Colaboradores da Unidade</h2>
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-xs uppercase">
+                    <tr>
+                        <th class="p-3">Foto</th>
+                        <th class="p-3">Nome / CPF</th>
+                        <th class="p-3">Grupo</th>
+                        <th class="p-3">Ativo</th>
+                        <th class="p-3 text-right">Ação</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for c in colaboradores %}
+                    <tr>
+                        <td class="p-3">
+                            {% if c.foto_path %}
+                                <img src="{{ url_for('static', filename=c.foto_path) }}" class="h-11 w-11 rounded-full object-cover border">
+                            {% else %}
+                                <div class="h-11 w-11 rounded-full bg-gray-200 flex items-center justify-center text-gray-500"><i class="fa-solid fa-user"></i></div>
+                            {% endif %}
+                        </td>
+                        <td class="p-3">
+                            <div class="font-semibold">{{ c.nome }}</div>
+                            <div class="text-xs text-gray-500">{{ c.cpf }}</div>
+                        </td>
+                        <td class="p-3">{{ c.grupo_nome }}</td>
+                        <td class="p-3">{{ 'Sim' if c.ativo == 1 else 'Não' }}</td>
+                        <td class="p-3 text-right">
+                            <button type="button"
+                                data-id="{{ c.id }}"
+                                data-nome="{{ c.nome }}"
+                                data-cpf="{{ c.cpf }}"
+                                data-grupo="{{ c.grupo_id }}"
+                                data-ativo="{{ c.ativo }}"
+                                data-foto="{{ c.foto_path or '' }}"
+                                onclick="editarColaborador(this)"
+                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar / Trocar Foto</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: CARDÁPIO -->
+    {% if aba == 'cardapios' and 'cad_cardapio' in perms %}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4">Cadastrar Cardápio</h2>
+            <form id="formCardapio" class="space-y-3">
+                <input type="hidden" name="id" id="card_id">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Data de Vigência</label>
+                    <input type="date" name="data_vigencia" id="card_data" value="{{ hoje }}" required class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Início Vigência</label>
+                        <input type="time" name="hora_inicio" id="card_ini" required class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                    <div>
+                        <label class="text-xs font-semibold uppercase text-gray-600">Fim Vigência</label>
+                        <input type="time" name="hora_fim" id="card_fim" required class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Proteínas</label>
+                    <input type="text" name="proteinas" id="card_proteinas" required placeholder="Ex: Frango Grelhado / Carne Assada" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Guarnição</label>
+                    <input type="text" name="guarnicao" id="card_guarnicao" required placeholder="Ex: Arroz branco, Feijão, Farofa e Purê" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Saladas</label>
+                    <input type="text" name="saladas" id="card_saladas" required placeholder="Ex: Alface, Tomate, Cenoura ralada" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Sobremesas</label>
+                    <input type="text" name="sobremesas" id="card_sobremesas" required placeholder="Ex: Gelatina / Fruta da estação" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Bebidas</label>
+                    <input type="text" name="bebidas" id="card_bebidas" required placeholder="Ex: Suco natural de Laranja / Acerola" class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
+                    <select name="ativo" id="card_ativo" class="w-full px-3 py-2 border rounded-lg bg-white">
+                        <option value="1">Sim</option>
+                        <option value="0">Não</option>
+                    </select>
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-lg btn-tema font-semibold">Salvar Cardápio</button>
+            </form>
+        </div>
+
+        <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
+            <h2 class="text-lg font-bold mb-4">Cardápios Cadastrados na Unidade</h2>
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-xs uppercase">
+                    <tr>
+                        <th class="p-3">Vigência</th>
+                        <th class="p-3">Composição do Cardápio</th>
+                        <th class="p-3">Ativo</th>
+                        <th class="p-3 text-right">Ação</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for c in cardapios %}
+                    <tr>
+                        <td class="p-3 whitespace-nowrap">
+                            <div class="font-bold">{{ c.data_vigencia }}</div>
+                            <div class="text-xs text-gray-500">{{ c.hora_inicio }} às {{ c.hora_fim }}</div>
+                        </td>
+                        <td class="p-3 text-xs space-y-0.5">
+                            <div><strong>Proteínas:</strong> {{ c.proteinas }}</div>
+                            <div><strong>Guarnição:</strong> {{ c.guarnicao }}</div>
+                            <div><strong>Saladas:</strong> {{ c.saladas }} | <strong>Sobremesas:</strong> {{ c.sobremesas }} | <strong>Bebidas:</strong> {{ c.bebidas }}</div>
+                        </td>
+                        <td class="p-3">
+                            <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-emerald-100 text-emerald-700' if c.ativo == 1 else 'bg-gray-200 text-gray-600' }}">
+                                {{ 'Sim' if c.ativo == 1 else 'Não' }}
+                            </span>
+                        </td>
+                        <td class="p-3 text-right">
+                            <button type="button"
+                                data-id="{{ c.id }}"
+                                data-vigencia="{{ c.data_vigencia }}"
+                                data-inicio="{{ c.hora_inicio }}"
+                                data-fim="{{ c.hora_fim }}"
+                                data-proteinas="{{ c.proteinas }}"
+                                data-guarnicao="{{ c.guarnicao }}"
+                                data-saladas="{{ c.saladas }}"
+                                data-sobremesas="{{ c.sobremesas }}"
+                                data-bebidas="{{ c.bebidas }}"
+                                data-ativo="{{ c.ativo }}"
+                                onclick="editarCardapio(this)"
+                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: UNIDADES -->
+    {% if aba == 'unidades' and 'cad_unidade' in perms %}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4">Cadastrar Unidade</h2>
+            <form id="formUnidade" class="space-y-3">
+                <input type="hidden" name="id" id="unid_id">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Descrição da Unidade</label>
+                    <input type="text" name="descricao" id="unid_descricao" required class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
+                    <select name="ativo" id="unid_ativo" class="w-full px-3 py-2 border rounded-lg bg-white">
+                        <option value="1">Sim</option>
+                        <option value="0">Não</option>
+                    </select>
+                </div>
+                <button type="submit" class="w-full py-2.5 rounded-lg btn-tema font-semibold">Salvar Unidade</button>
+            </form>
+        </div>
+        <div class="md:col-span-2 bg-white p-6 rounded-xl shadow">
+            <h2 class="text-lg font-bold mb-4">Unidades Cadastradas</h2>
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-xs uppercase">
+                    <tr><th class="p-3">ID</th><th class="p-3">Descrição</th><th class="p-3">Ativo</th><th class="p-3 text-right">Ação</th></tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for u in unidades %}
+                    <tr>
+                        <td class="p-3">#{{ u.id }}</td>
+                        <td class="p-3 font-semibold">{{ u.descricao }}</td>
+                        <td class="p-3">{{ 'Sim' if u.ativo == 1 else 'Não' }}</td>
+                        <td class="p-3 text-right">
+                            <button type="button"
+                                data-id="{{ u.id }}"
+                                data-descricao="{{ u.descricao }}"
+                                data-ativo="{{ u.ativo }}"
+                                onclick="editarUnidade(this)"
+                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: RELATÓRIOS EM PDF -->
+    {% if aba == 'relatorios' and 'relatorios' in perms %}
+    <div class="bg-white p-6 rounded-xl shadow max-w-3xl mx-auto">
+        <h2 class="text-xl font-bold mb-2">Emissão de Relatórios em PDF ({{ session.get('unidade_nome') }})</h2>
+        <p class="text-sm text-gray-500 mb-6">Os relatórios incluem automaticamente a logo da unidade e consolidam apenas os registros da unidade logada.</p>
+
+        <form action="{{ url_for('gerar_relatorio_pdf') }}" method="GET" target="_blank" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Data Inicial</label>
+                    <input type="date" name="data_inicio" value="{{ hoje[:8] }}01" required class="w-full px-3 py-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Data Final</label>
+                    <input type="date" name="data_fim" value="{{ hoje }}" required class="w-full px-3 py-2 border rounded-lg">
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs font-semibold uppercase text-gray-600 mb-2">Tipo de Relatório</label>
+                <div class="space-y-2">
+                    <label class="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
+                        <input type="radio" name="tipo" value="analitico" checked>
+                        <div>
+                            <div class="font-semibold text-sm">1. Relatório Analítico por Colaborador</div>
+                            <div class="text-xs text-gray-500">Lista cada refeição realizada por colaborador no período e o custo acumulado por colaborador.</div>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
+                        <input type="radio" name="tipo" value="sintetico">
+                        <div>
+                            <div class="font-semibold text-sm">2. Relatório Sintético por Tipo de Refeição</div>
+                            <div class="text-xs text-gray-500">Totalizador de refeições servidas por modalidade dentro do período e custo global.</div>
+                        </div>
+                    </label>
+                    <label class="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
+                        <input type="radio" name="tipo" value="cardapios">
+                        <div>
+                            <div class="font-semibold text-sm">3. Relatório de Cardápios Ofertados</div>
+                            <div class="text-xs text-gray-500">Histórico completo dos cardápios cadastrados e vigentes no período selecionado.</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+            <button type="submit" class="w-full py-3 rounded-lg btn-tema font-bold shadow">
+                <i class="fa-solid fa-file-pdf mr-2"></i>Gerar e Baixar Relatório em PDF
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+    <!-- ABA: LOGS DE AUDITORIA -->
+    {% if aba == 'logs' and 'logs' in perms %}
+    <div class="bg-white p-6 rounded-xl shadow">
+        <h2 class="text-lg font-bold mb-4">Auditoria e Logs do Sistema</h2>
+        <form id="formFiltroLogs" class="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
+            <div>
+                <label class="text-xs font-semibold uppercase text-gray-600">Data Inicial</label>
+                <input type="date" name="data_inicio" value="{{ hoje }}" required class="w-full px-3 py-2 border rounded-lg">
+            </div>
+            <div>
+                <label class="text-xs font-semibold uppercase text-gray-600">Data Final</label>
+                <input type="date" name="data_fim" value="{{ hoje }}" required class="w-full px-3 py-2 border rounded-lg">
+            </div>
+            <div>
+                <label class="text-xs font-semibold uppercase text-gray-600">Tabela</label>
+                <select name="tabela" class="w-full px-3 py-2 border rounded-lg bg-white">
+                    <option value="TODAS">Todas as Tabelas</option>
+                    <option value="usuarios">Usuários</option>
+                    <option value="refeicoes">Refeições</option>
+                    <option value="grupos">Grupos</option>
+                    <option value="colaboradores">Colaboradores</option>
+                    <option value="cardapios">Cardápios</option>
+                    <option value="unidades">Unidades</option>
+                    <option value="configuracoes">Configurações</option>
+                    <option value="registros_refeicao">Registros de Entrada</option>
+                </select>
+            </div>
+            <div class="flex items-end">
+                <button type="submit" class="w-full py-2.5 rounded-lg btn-tema font-semibold"><i class="fa-solid fa-magnifying-glass mr-1"></i>Filtrar Logs</button>
+            </div>
+        </form>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-xs uppercase">
+                    <tr>
+                        <th class="p-3">Data e Horário</th>
+                        <th class="p-3">Usuário</th>
+                        <th class="p-3">Tabela</th>
+                        <th class="p-3">Ação</th>
+                        <th class="p-3">Detalhes da Operação</th>
+                    </tr>
+                </thead>
+                <tbody id="tabelaLogsBody" class="divide-y">
+                    <tr><td colspan="5" class="p-4 text-center text-gray-500">Clique em "Filtrar Logs" para carregar os eventos do período.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: CONFIGURAÇÕES -->
+    {% if aba == 'configuracoes' and 'configuracoes' in perms %}
+    <div class="bg-white p-6 rounded-xl shadow max-w-3xl mx-auto">
+        <h2 class="text-xl font-bold mb-2">Personalização Visual ({{ session.get('unidade_nome') }})</h2>
+        <p class="text-sm text-gray-500 mb-6">O tema e a logo selecionados são aplicados nas telas administrativas, relatórios em PDF e no Totem de Entrada.</p>
+
+        <form id="formConfiguracoes" enctype="multipart/form-data" class="space-y-6">
+            <div>
+                <label class="block text-sm font-bold text-gray-700 mb-3">Selecione um dos 10 Temas:</label>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {% for chave, t in temas_disponiveis.items() %}
+                    <label class="flex items-center justify-between p-3 border rounded-xl cursor-pointer hover:shadow-sm {{ 'ring-2 ring-blue-600 bg-blue-50/30' if cfg_global.tema_chave == chave else '' }}">
+                        <div class="flex items-center gap-3">
+                            <input type="radio" name="tema" value="{{ chave }}" {{ 'checked' if cfg_global.tema_chave == chave else '' }}>
+                            <span class="font-medium text-sm">{{ t.nome }}</span>
+                        </div>
+                        <div class="flex gap-1">
+                            <span class="w-5 h-5 rounded-full border js-cor-preview" data-cor="{{ t.primaria }}"></span>
+                            <span class="w-5 h-5 rounded-full border js-cor-preview" data-cor="{{ t.secundaria }}"></span>
+                        </div>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm font-bold text-gray-700 mb-1">Logo da Unidade</label>
+                <input type="file" name="logo" accept="image/*" class="w-full border rounded-lg p-2 text-sm">
+                <p class="text-xs text-gray-500 mt-1">Exibida no login, cabeçalho principal, relatórios PDF e Totem de entrada.</p>
+            </div>
+
+            <button type="submit" class="w-full py-3 rounded-lg btn-tema font-bold shadow">
+                Salvar Tema e Logo
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+    const rotasEl = document.getElementById('rotasAdmin');
+
+    document.querySelectorAll('.js-cor-preview').forEach(el => {
+        el.style.backgroundColor = el.dataset.cor;
+    });
+
+    const mapForms = [
+        { id: 'formUsuario', url: rotasEl.dataset.urlUsuario },
+        { id: 'formRefeicao', url: rotasEl.dataset.urlRefeicao },
+        { id: 'formGrupo', url: rotasEl.dataset.urlGrupo },
+        { id: 'formColaborador', url: rotasEl.dataset.urlColaborador },
+        { id: 'formCardapio', url: rotasEl.dataset.urlCardapio },
+        { id: 'formUnidade', url: rotasEl.dataset.urlUnidade },
+        { id: 'formConfiguracoes', url: rotasEl.dataset.urlConfiguracoes }
+    ];
+
+    mapForms.forEach(item => {
+        const el = document.getElementById(item.id);
+        if (el) {
+            el.addEventListener('submit', function(e) {
+                e.preventDefault();
+                enviarFormularioAjax(this, item.url, true);
+            });
+        }
+    });
+
+    let streamColab = null;
+
+    async function ativarCameraColab() {
+        try {
+            streamColab = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            const video = document.getElementById('videoColab');
+            video.srcObject = streamColab;
+            
+            // Mostra o vídeo e a máscara pontilhada
+            video.classList.remove('hidden');
+            document.getElementById('guiaCamera').classList.remove('hidden');
+            document.getElementById('previewColab').classList.add('hidden');
+
+            document.getElementById('btnAtivarCam').classList.add('hidden');
+            document.getElementById('btnCapturar').classList.remove('hidden');
+            document.getElementById('btnLimparFoto').classList.remove('hidden');
+        } catch (err) {
+            exibirMensagem('Erro', 'Não foi possível acessar a câmera. Verifique as permissões do navegador.', 'erro');
+        }
+    }
+
+    function capturarFotoColab() {
+        const video = document.getElementById('videoColab');
+        const canvas = document.getElementById('canvasColab');
+        const preview = document.getElementById('previewColab');
+        const b64Input = document.getElementById('col_foto_b64');
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        b64Input.value = dataUrl;
+        preview.src = dataUrl;
+
+        // Oculta vídeo e máscara, mostra a foto
+        video.classList.add('hidden');
+        document.getElementById('guiaCamera').classList.add('hidden');
+        preview.classList.remove('hidden');
+        
+        document.getElementById('btnCapturar').classList.add('hidden');
+        document.getElementById('btnLimparFoto').innerText = 'Descartar e Tentar Novamente';
+
+        if (streamColab) {
+            streamColab.getTracks().forEach(track => track.stop());
+            streamColab = null;
+        }
+    }
+
+    function limparFotoColab() {
+        document.getElementById('col_foto_b64').value = '';
+        document.getElementById('previewColab').src = '';
+        document.getElementById('previewColab').classList.add('hidden');
+
+        if (streamColab) {
+            streamColab.getTracks().forEach(track => track.stop());
+            streamColab = null;
+        }
+        document.getElementById('videoColab').classList.add('hidden');
+        document.getElementById('guiaCamera').classList.add('hidden');
+        document.getElementById('btnAtivarCam').classList.remove('hidden');
+        document.getElementById('btnAtivarCam').innerHTML = '<i class="fa-solid fa-camera mr-1"></i> Ligar Câmera';
+        document.getElementById('btnCapturar').classList.add('hidden');
+        document.getElementById('btnLimparFoto').classList.add('hidden');
+    }
+
+    function limparFormColaborador() {
+        document.getElementById('formColaborador').reset();
+        document.getElementById('col_id').value = '';
+        limparFotoColab();
+    }
+
+    function editarColaborador(btn) {
+        const d = btn.dataset;
+        document.getElementById('col_id').value = d.id;
+        document.getElementById('col_nome').value = d.nome;
+        document.getElementById('col_cpf').value = d.cpf;
+        document.getElementById('col_grupo').value = d.grupo;
+        document.getElementById('col_ativo').value = d.ativo;
+
+        limparFotoColab();
+        
+        if (d.foto) {
+            document.getElementById('previewColab').src = '/static/' + d.foto;
+            document.getElementById('previewColab').classList.remove('hidden');
+            document.getElementById('btnLimparFoto').classList.remove('hidden');
+            document.getElementById('btnLimparFoto').innerText = 'Remover Foto';
+            document.getElementById('btnAtivarCam').classList.remove('hidden');
+            document.getElementById('btnAtivarCam').innerHTML = '<i class="fa-solid fa-camera mr-1"></i> Refazer Foto';
+        }
+    }
+
+    // Demais funções CRUD
+    function editarUsuario(btn) {
+        const d = btn.dataset;
+        const unidadesIds = JSON.parse(d.unidades || '[]');
+        const permissoes = JSON.parse(d.permissoes || '[]');
+        document.getElementById('tituloFormUsuario').innerText = 'Editar Usuário #' + d.id;
+        document.getElementById('usr_id').value = d.id;
+        document.getElementById('usr_nome').value = d.nome;
+        document.getElementById('usr_cpf').value = d.cpf;
+        document.getElementById('usr_cargo').value = d.cargo;
+        document.getElementById('usr_ativo').value = d.ativo;
+        document.querySelectorAll('.chk-usr-unid').forEach(chk => { chk.checked = unidadesIds.includes(parseInt(chk.value, 10)); });
+        document.querySelectorAll('.chk-perm').forEach(chk => { chk.checked = permissoes.includes(chk.value); });
+    }
+
+    function limparFormUsuario() {
+        document.getElementById('formUsuario').reset();
+        document.getElementById('usr_id').value = '';
+        document.getElementById('tituloFormUsuario').innerText = 'Novo Usuário';
+    }
+
+    function limparFormRefeicao() {
+        document.getElementById('formRefeicao').reset();
+        document.getElementById('ref_id').value = '';
+    }
+
+    function resetarSenha(btn) {
+        const id = btn.dataset.id;
+        const nome = btn.dataset.nome;
+        exibirConfirmacao('Reset de Senha', `Deseja redefinir a senha de ${nome} para o padrão "123"?`, async () => {
+            const fd = new FormData();
+            fd.append('id', id);
+            const r = await fetch(rotasEl.dataset.urlResetSenha, { method: 'POST', headers: { 'X-CSRFToken': obterCsrfToken() }, body: fd });
+            const d = await r.json();
+            exibirMensagem('Reset de Senha', d.mensagem, d.status === 'sucesso' ? 'sucesso' : 'erro');
+        });
+    }
+
+    function editarRefeicao(btn) {
+        const d = btn.dataset;
+        const gruposIds = JSON.parse(d.grupos || '[]');
+        document.getElementById('ref_id').value = d.id;
+        document.getElementById('ref_descricao').value = d.descricao;
+        document.getElementById('ref_ini').value = d.inicio;
+        document.getElementById('ref_fim').value = d.fim;
+        document.getElementById('ref_custo').value = d.custo;
+        document.getElementById('ref_ativo').value = d.ativo;
+        document.querySelectorAll('.chk-ref-grupo').forEach(chk => { chk.checked = gruposIds.includes(parseInt(chk.value, 10)); });
+    }
+
+    function editarGrupo(btn) {
+        const d = btn.dataset;
+        const refIds = JSON.parse(d.refeicoes || '[]');
+        document.getElementById('grp_id').value = d.id;
+        document.getElementById('grp_descricao').value = d.descricao;
+        document.getElementById('grp_ativo').value = d.ativo;
+        document.querySelectorAll('.chk-grp-ref').forEach(chk => { chk.checked = refIds.includes(parseInt(chk.value, 10)); });
+    }
+
+    function editarCardapio(btn) {
+        const d = btn.dataset;
+        document.getElementById('card_id').value = d.id;
+        document.getElementById('card_data').value = d.vigencia;
+        document.getElementById('card_ini').value = d.inicio;
+        document.getElementById('card_fim').value = d.fim;
+        document.getElementById('card_proteinas').value = d.proteinas;
+        document.getElementById('card_guarnicao').value = d.guarnicao;
+        document.getElementById('card_saladas').value = d.saladas;
+        document.getElementById('card_sobremesas').value = d.sobremesas;
+        document.getElementById('card_bebidas').value = d.bebidas;
+        document.getElementById('card_ativo').value = d.ativo;
+    }
+
+    function editarUnidade(btn) {
+        const d = btn.dataset;
+        document.getElementById('unid_id').value = d.id;
+        document.getElementById('unid_descricao').value = d.descricao;
+        document.getElementById('unid_ativo').value = d.ativo;
+    }
+
+    const formLogs = document.getElementById('formFiltroLogs');
+    if (formLogs) {
+        formLogs.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const fd = new FormData(this);
+            const r = await fetch(rotasEl.dataset.urlLogs, { method: 'POST', headers: { 'X-CSRFToken': obterCsrfToken() }, body: fd });
+            const d = await r.json();
+            const tbody = document.getElementById('tabelaLogsBody');
+            tbody.innerHTML = '';
+            if (!d.logs || d.logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Nenhum registro encontrado no período.</td></tr>';
+                return;
+            }
+            d.logs.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="p-3 whitespace-nowrap font-mono text-xs">${item.data_hora}</td>
+                    <td class="p-3 font-semibold">${item.usuario_nome}</td>
+                    <td class="p-3 uppercase text-xs font-bold text-gray-600">${item.tabela}</td>
+                    <td class="p-3"><span class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-xs font-bold">${item.acao}</span></td>
+                    <td class="p-3 text-gray-700">${item.descricao}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        });
+    }
+</script>
+{% endblock %}

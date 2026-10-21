@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>{% block title %}Gestão de Refeitório{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --cor-primaria: #1e3a8a;
+            --cor-secundaria: #2563eb;
+            --cor-fundo: #f8fafc;
+            --cor-texto: #0f172a;
+        }
+        body {
+            background-color: var(--cor-fundo);
+            color: var(--cor-texto);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+        .bg-tema-primario { background-color: var(--cor-primaria); }
+        .bg-tema-secundario { background-color: var(--cor-secundaria); }
+        .text-tema-primario { color: var(--cor-primaria); }
+        .border-tema-primario { border-color: var(--cor-primaria); }
+        .btn-tema {
+            background-color: var(--cor-primaria);
+            color: #ffffff;
+            transition: all 0.2s;
+        }
+        .btn-tema:hover {
+            background-color: var(--cor-secundaria);
+        }
+    </style>
+    {% block head_extra %}{% endblock %}
+</head>
+<body class="min-h-screen flex flex-col"
+      data-cor-primaria="{{ cfg_global.tema.primaria }}"
+      data-cor-secundaria="{{ cfg_global.tema.secundaria }}"
+      data-cor-fundo="{{ cfg_global.tema.fundo }}"
+      data-cor-texto="{{ cfg_global.tema.texto }}">
+
+    {% if not ocultar_cabecalho %}
+    <header class="bg-tema-primario text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                {% if cfg_global.logo_path %}
+                    <img src="{{ url_for('static', filename=cfg_global.logo_path) }}" alt="Logo" class="h-10 w-auto bg-white p-1 rounded shadow">
+                {% else %}
+                    <div class="h-10 w-10 rounded bg-white/20 flex items-center justify-center font-bold text-lg">
+                        <i class="fa-solid fa-utensils"></i>
+                    </div>
+                {% endif %}
+                <div>
+                    <h1 class="text-lg font-bold leading-tight">Sistema de Controle de Refeitório</h1>
+                    <p class="text-xs text-white/80">
+                        <i class="fa-solid fa-building mr-1"></i>{{ session.get('unidade_nome', cfg_global.unidade_nome) }}
+                    </p>
+                </div>
+            </div>
+
+            {% if session.get('usuario_id') and session.get('primeiro_acesso') == 0 %}
+            <nav class="flex flex-wrap items-center gap-1 text-sm">
+                <a href="{{ url_for('admin_painel', aba='dashboard') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-chart-pie mr-1"></i>Painel</a>
+                {% set perms = session.get('permissoes', []) %}
+                {% if 'cad_usuario' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='usuarios') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-user-shield mr-1"></i>Usuários</a>
+                {% endif %}
+                {% if 'cad_refeicao' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='refeicoes') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-clock mr-1"></i>Refeições</a>
+                {% endif %}
+                {% if 'cad_grupo' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='grupos') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-layer-group mr-1"></i>Grupos</a>
+                {% endif %}
+                {% if 'cad_colaborador' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='colaboradores') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-id-badge mr-1"></i>Colaboradores</a>
+                {% endif %}
+                {% if 'cad_cardapio' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='cardapios') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-plate-wheat mr-1"></i>Cardápio</a>
+                {% endif %}
+                {% if 'cad_unidade' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='unidades') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-hospital mr-1"></i>Unidades</a>
+                {% endif %}
+                {% if 'relatorios' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='relatorios') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-file-pdf mr-1"></i>Relatórios</a>
+                {% endif %}
+                {% if 'logs' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='logs') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-list-check mr-1"></i>Logs</a>
+                {% endif %}
+                {% if 'configuracoes' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='configuracoes') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-palette mr-1"></i>Configurações</a>
+                {% endif %}
+                <a href="{{ url_for('totem') }}" target="_blank" class="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 font-semibold ml-1"><i class="fa-solid fa-desktop mr-1"></i>Abrir Totem</a>
+                <a href="{{ url_for('logout') }}" class="px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 font-semibold ml-2"><i class="fa-solid fa-right-from-bracket mr-1"></i>Sair</a>
+            </nav>
+            {% endif %}
+        </div>
+    </header>
+    {% endif %}
+
+    <main class="flex-1">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- MODAL DE AVISO E CONFIRMAÇÃO ESTILIZADO GLOBAL -->
+    <div id="modalSistema" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden transform transition-all">
+            <div id="modalSistemaHeader" class="bg-tema-primario text-white px-6 py-4 flex items-center justify-between">
+                <h3 id="modalSistemaTitulo" class="font-bold text-lg">Aviso do Sistema</h3>
+                <button type="button" onclick="fecharModalSistema()" class="text-white/80 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <div class="p-6">
+                <p id="modalSistemaMensagem" class="text-gray-700 text-base leading-relaxed"></p>
+                <div id="modalSistemaBotoes" class="mt-6 flex justify-end gap-3">
+                    <button type="button" id="btnModalCancelar" onclick="fecharModalSistema()" class="hidden px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium">Cancelar</button>
+                    <button type="button" id="btnModalConfirmar" onclick="fecharModalSistema()" class="px-5 py-2 rounded-lg btn-tema font-semibold shadow">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function aplicarTemaDinamico() {
+            const b = document.body.dataset;
+            const root = document.documentElement.style;
+            if (b.corPrimaria) root.setProperty('--cor-primaria', b.corPrimaria);
+            if (b.corSecundaria) root.setProperty('--cor-secundaria', b.corSecundaria);
+            if (b.corFundo) root.setProperty('--cor-fundo', b.corFundo);
+            if (b.corTexto) root.setProperty('--cor-texto', b.corTexto);
+        })();
+
+        function obterCsrfToken() {
+            return document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        }
+
+        function exibirMensagem(titulo, mensagem, tipo = 'info', callbackOk = null) {
+            const modal = document.getElementById('modalSistema');
+            const header = document.getElementById('modalSistemaHeader');
+            document.getElementById('modalSistemaTitulo').innerText = titulo;
+            document.getElementById('modalSistemaMensagem').innerText = mensagem;
+            document.getElementById('btnModalCancelar').classList.add('hidden');
+
+            header.className = 'px-6 py-4 flex items-center justify-between text-white ';
+            if (tipo === 'erro') header.classList.add('bg-red-600');
+            else if (tipo === 'sucesso') header.classList.add('bg-emerald-600');
+            else header.classList.add('bg-tema-primario');
+
+            const btnOk = document.getElementById('btnModalConfirmar');
+            btnOk.innerText = 'Entendido';
+            btnOk.onclick = function() {
+                fecharModalSistema();
+                if (callbackOk) callbackOk();
+            };
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function exibirConfirmacao(titulo, mensagem, callbackSim) {
+            const modal = document.getElementById('modalSistema');
+            const header = document.getElementById('modalSistemaHeader');
+            header.className = 'px-6 py-4 flex items-center justify-between text-white bg-amber-600';
+            document.getElementById('modalSistemaTitulo').innerText = titulo;
+            document.getElementById('modalSistemaMensagem').innerText = mensagem;
+
+            const btnCancel = document.getElementById('btnModalCancelar');
+            btnCancel.classList.remove('hidden');
+
+            const btnOk = document.getElementById('btnModalConfirmar');
+            btnOk.innerText = 'Sim, Confirmar';
+            btnOk.onclick = function() {
+                fecharModalSistema();
+                if (callbackSim) callbackSim();
+            };
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function fecharModalSistema() {
+            const modal = document.getElementById('modalSistema');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        async function enviarFormularioAjax(formElement, urlDestino, recarregar = true) {
+            const formData = new FormData(formElement);
+            try {
+                const resp = await fetch(urlDestino, {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': obterCsrfToken() },
+                    body: formData
+                });
+                const dados = await resp.json();
+                if (dados.status === 'sucesso') {
+                    exibirMensagem('Sucesso', dados.mensagem || 'Operação concluída!', 'sucesso', () => {
+                        if (dados.redirect) window.location.href = dados.redirect;
+                        else if (recarregar) window.location.reload();
+                    });
+                } else if (dados.status === 'conflito') {
+                    exibirConfirmacao('Conflito de Vigência de Cardápio', dados.mensagem, async () => {
+                        formData.append('forcar_inativacao', '1');
+                        const resp2 = await fetch(urlDestino, {
+                            method: 'POST',
+                            headers: { 'X-CSRFToken': obterCsrfToken() },
+                            body: formData
+                        });
+                        const dados2 = await resp2.json();
+                        if (dados2.status === 'sucesso') {
+                            exibirMensagem('Sucesso', dados2.mensagem, 'sucesso', () => window.location.reload());
+                        } else {
+                            exibirMensagem('Atenção', dados2.mensagem, 'erro');
+                        }
+                    });
+                } else {
+                    exibirMensagem('Atenção', dados.mensagem || 'Ocorreu um erro.', 'erro');
+                }
+            } catch (e) {
+                exibirMensagem('Erro de Comunicação', 'Não foi possível conectar ao servidor.', 'erro');
+            }
+        }
+    </script>
+    {% block scripts_extra %}{% endblock %}
+</body>
+</html>
