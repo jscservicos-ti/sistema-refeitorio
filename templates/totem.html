@@ -6,6 +6,7 @@
 <div id="dadosTotem"
      class="h-screen w-screen overflow-hidden flex flex-col"
      data-qtd-rostos="{{ qtd_rostos_ativos }}"
+     data-url-unidades-cpf="{{ url_for('api_unidades_por_cpf') }}"
      data-url-autenticar="{{ url_for('totem_autenticar_unidade') }}"
      data-url-cardapio="{{ url_for('totem_cardapio_atual') }}"
      data-url-reconhecer="{{ url_for('totem_reconhecer_frame') }}"
@@ -62,7 +63,7 @@
             <form id="formIdentificarCpf" class="w-full max-w-lg space-y-3">
                 <div>
                     <label class="block text-xs font-bold uppercase text-gray-600 mb-1 text-center">
-                        Ou digite seu CPF abaixo (o sistema aprenderá seu rosto automaticamente):
+                        Ou digite seu CPF abaixo (1 entrada permitida por refeição no dia):
                     </label>
                     <div class="flex gap-2">
                         <input type="text" id="inputCpfTotem" maxlength="14" placeholder="000.000.000-00" autocomplete="off"
@@ -127,23 +128,23 @@
     </div>
 </div>
 
-<!-- MODAL DE UNIDADE -->
+<!-- MODAL DE UNIDADE DO TOTEM (CARREGA UNIDADES APÓS DIGITAR O CPF) -->
 <div id="modalUnidadeTotem" class="fixed inset-0 bg-black/75 backdrop-blur-sm {{ 'flex' if not totem_uid else 'hidden' }} items-center justify-center z-40 p-4">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
         <h3 class="text-xl font-bold text-gray-800 mb-1">Selecionar Unidade do Totem</h3>
-        <p class="text-xs text-gray-500 mb-4">Um usuário autorizado da unidade deve validar o login para habilitar o registro.</p>
+        <p class="text-xs text-gray-500 mb-4">Digite seu CPF para carregar as unidades vinculadas ao seu usuário.</p>
         <form id="formAutenticarTotem" class="space-y-3">
             <div>
-                <label class="text-xs font-bold uppercase text-gray-600">Unidade</label>
-                <select name="unidade_id" required class="w-full px-3 py-2.5 border rounded-lg bg-white">
-                    {% for u in unidades %}
-                        <option value="{{ u.id }}" {{ 'selected' if u.id == totem_uid else '' }}>{{ u.descricao }}</option>
-                    {% endfor %}
-                </select>
+                <label class="text-xs font-bold uppercase text-gray-600">CPF do Usuário da Unidade</label>
+                <input type="text" name="cpf" id="totemAuthCpf" required maxlength="14" placeholder="000.000.000-00" autocomplete="off"
+                    class="w-full px-3 py-2.5 border rounded-lg">
             </div>
             <div>
-                <label class="text-xs font-bold uppercase text-gray-600">CPF do Usuário da Unidade</label>
-                <input type="text" name="cpf" required placeholder="000.000.000-00" class="w-full px-3 py-2.5 border rounded-lg">
+                <label class="text-xs font-bold uppercase text-gray-600">Unidade / Empresa</label>
+                <select name="unidade_id" id="totemAuthUnidade" required disabled
+                    class="w-full px-3 py-2.5 border rounded-lg bg-gray-100 text-gray-600">
+                    <option value="">Digite o CPF acima...</option>
+                </select>
             </div>
             <div>
                 <label class="text-xs font-bold uppercase text-gray-600">Senha</label>
@@ -169,6 +170,59 @@
     let dadosPendentes = null;
     let ultimoAvisoBloqueio = 0;
 
+    // Carregamento dinâmico de unidades por CPF no modal do Totem
+    const inputTotemAuthCpf = document.getElementById('totemAuthCpf');
+    const selectTotemAuthUnidade = document.getElementById('totemAuthUnidade');
+    let ultimoCpfTotemBuscado = '';
+
+    async function carregarUnidadesTotemPorCpf() {
+        const cpfLimpo = (inputTotemAuthCpf.value || '').replace(/\D/g, '');
+        if (cpfLimpo.length !== 11) {
+            ultimoCpfTotemBuscado = '';
+            selectTotemAuthUnidade.innerHTML = '<option value="">Digite os 11 dígitos do CPF...</option>';
+            selectTotemAuthUnidade.disabled = true;
+            selectTotemAuthUnidade.classList.add('bg-gray-100');
+            return;
+        }
+        if (cpfLimpo === ultimoCpfTotemBuscado) return;
+        ultimoCpfTotemBuscado = cpfLimpo;
+
+        selectTotemAuthUnidade.innerHTML = '<option value="">Carregando unidades...</option>';
+        selectTotemAuthUnidade.disabled = true;
+
+        try {
+            const fd = new FormData();
+            fd.append('cpf', cpfLimpo);
+            const resp = await fetch(totemEl.dataset.urlUnidadesCpf, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': obterCsrfToken() },
+                body: fd
+            });
+            const d = await resp.json();
+            selectTotemAuthUnidade.innerHTML = '';
+            if (d.unidades && d.unidades.length > 0) {
+                d.unidades.forEach(u => {
+                    const opt = document.createElement('option');
+                    opt.value = u.id;
+                    opt.textContent = u.descricao;
+                    selectTotemAuthUnidade.appendChild(opt);
+                });
+                selectTotemAuthUnidade.disabled = false;
+                selectTotemAuthUnidade.classList.remove('bg-gray-100');
+                selectTotemAuthUnidade.classList.add('bg-white');
+            } else {
+                selectTotemAuthUnidade.innerHTML = '<option value="">Nenhuma unidade vinculada a este CPF</option>';
+                selectTotemAuthUnidade.disabled = true;
+                selectTotemAuthUnidade.classList.add('bg-gray-100');
+            }
+        } catch (e) {
+            selectTotemAuthUnidade.innerHTML = '<option value="">Erro ao carregar unidades</option>';
+        }
+    }
+
+    inputTotemAuthCpf.addEventListener('input', carregarUnidadesTotemPorCpf);
+    inputTotemAuthCpf.addEventListener('blur', carregarUnidadesTotemPorCpf);
+
     function alternarTelaCheia() {
         if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(() => {}); }
         else { document.exitFullscreen().catch(() => {}); }
@@ -179,6 +233,10 @@
 
     document.getElementById('formAutenticarTotem').addEventListener('submit', function(e) {
         e.preventDefault();
+        if (!selectTotemAuthUnidade.value) {
+            exibirMensagem('Atenção', 'Digite um CPF válido para carregar e selecionar sua unidade.', 'erro');
+            return;
+        }
         enviarFormularioAjax(this, totemEl.dataset.urlAutenticar, true);
     });
 
@@ -323,9 +381,6 @@
         else if (e.key === 'Backspace') { e.preventDefault(); cancelarConfirmacaoEntrada(); }
     });
 
-    // =========================================================================
-    // LOOP DE RECONHECIMENTO FACIAL NO PYTHON (YUNET + SFACE + CLAHE)
-    // =========================================================================
     function limparDesenhoOverlay() {
         const overlay = document.getElementById('overlayCanvas');
         if (overlay) {
@@ -402,11 +457,11 @@
                 } else if (d.status === 'desconhecido') {
                     desenharCaixaRosto(d.bbox, '#f59e0b', 'Não reconhecido (Digite o CPF)');
                 } else if (d.status === 'bloqueado') {
-                    desenharCaixaRosto(d.bbox, '#ef4444', d.nome || 'Acesso fora de horário');
+                    desenharCaixaRosto(d.bbox, '#ef4444', d.nome || 'Já registrado / Fora de horário');
                     const agoraMs = Date.now();
                     if (agoraMs - ultimoAvisoBloqueio > 5000) {
                         ultimoAvisoBloqueio = agoraMs;
-                        exibirMensagem('Aviso de Horário / Registro', d.mensagem, 'erro');
+                        exibirMensagem('Aviso de Horário / Limite Diário', d.mensagem, 'erro');
                     }
                 } else if (d.status === 'reconhecido') {
                     desenharCaixaRosto(d.bbox, '#10b981', `${d.colaborador.nome}`);

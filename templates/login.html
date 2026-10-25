@@ -12,29 +12,31 @@
                 </div>
             {% endif %}
             <h2 class="text-2xl font-bold text-gray-800">Acesso Administrativo</h2>
-            <p class="text-sm text-gray-500 mt-1">Informe suas credenciais e selecione a unidade</p>
+            <p class="text-sm text-gray-500 mt-1">Digite seu CPF para carregar suas unidades vinculadas</p>
         </div>
 
-        <form id="formLogin" class="space-y-4">
+        <form id="formLogin"
+              class="space-y-4"
+              data-url-login="{{ url_for('api_login') }}"
+              data-url-unidades="{{ url_for('api_unidades_por_cpf') }}">
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">CPF do Usuário</label>
-                <input type="text" name="cpf" required maxlength="14" placeholder="000.000.000-00"
+                <input type="text" name="cpf" id="loginCpf" required maxlength="14" placeholder="000.000.000-00" autocomplete="off"
                     class="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Unidade / Empresa de Acesso</label>
+                <select name="unidade_id" id="loginUnidade" required disabled
+                    class="w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-gray-100 text-gray-600 focus:ring-2 focus:outline-none">
+                    <option value="">Digite seu CPF acima...</option>
+                </select>
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Senha</label>
                 <input type="password" name="senha" required placeholder="Digite sua senha"
                     class="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:outline-none">
             </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Unidade de Acesso</label>
-                <select name="unidade_id" required class="w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white focus:ring-2 focus:outline-none">
-                    {% for u in unidades %}
-                        <option value="{{ u.id }}">{{ u.descricao }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <button type="submit" class="w-full py-3 rounded-lg btn-tema font-bold shadow-md text-base">
+            <button type="submit" id="btnSubmitLogin" class="w-full py-3 rounded-lg btn-tema font-bold shadow-md text-base">
                 <i class="fa-solid fa-right-to-bracket mr-2"></i>Entrar no Sistema
             </button>
         </form>
@@ -49,9 +51,66 @@
 {% endblock %}
 {% block scripts_extra %}
 <script>
-document.getElementById('formLogin').addEventListener('submit', function(e) {
-    e.preventDefault();
-    enviarFormularioAjax(this, "{{ url_for('api_login') }}", false);
-});
+    const formLogin = document.getElementById('formLogin');
+    const inputCpf = document.getElementById('loginCpf');
+    const selectUnidade = document.getElementById('loginUnidade');
+    let ultimoCpfBuscado = '';
+
+    async function buscarUnidadesPorCpf() {
+        const cpfLimpo = (inputCpf.value || '').replace(/\D/g, '');
+        if (cpfLimpo.length !== 11) {
+            ultimoCpfBuscado = '';
+            selectUnidade.innerHTML = '<option value="">Digite os 11 dígitos do CPF...</option>';
+            selectUnidade.disabled = true;
+            selectUnidade.classList.add('bg-gray-100');
+            return;
+        }
+        if (cpfLimpo === ultimoCpfBuscado) return;
+        ultimoCpfBuscado = cpfLimpo;
+
+        selectUnidade.innerHTML = '<option value="">Carregando unidades vinculadas...</option>';
+        selectUnidade.disabled = true;
+
+        try {
+            const fd = new FormData();
+            fd.append('cpf', cpfLimpo);
+            const resp = await fetch(formLogin.dataset.urlUnidades, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': obterCsrfToken() },
+                body: fd
+            });
+            const d = await resp.json();
+            selectUnidade.innerHTML = '';
+            if (d.unidades && d.unidades.length > 0) {
+                d.unidades.forEach(u => {
+                    const opt = document.createElement('option');
+                    opt.value = u.id;
+                    opt.textContent = u.descricao;
+                    selectUnidade.appendChild(opt);
+                });
+                selectUnidade.disabled = false;
+                selectUnidade.classList.remove('bg-gray-100');
+                selectUnidade.classList.add('bg-white');
+            } else {
+                selectUnidade.innerHTML = '<option value="">Nenhuma unidade vinculada a este CPF</option>';
+                selectUnidade.disabled = true;
+                selectUnidade.classList.add('bg-gray-100');
+            }
+        } catch (e) {
+            selectUnidade.innerHTML = '<option value="">Erro ao carregar unidades</option>';
+        }
+    }
+
+    inputCpf.addEventListener('input', buscarUnidadesPorCpf);
+    inputCpf.addEventListener('blur', buscarUnidadesPorCpf);
+
+    formLogin.addEventListener('submit', function(e) {
+        e.preventDefault();
+        if (!selectUnidade.value) {
+            exibirMensagem('Atenção', 'Digite um CPF válido com vínculo ativo em ao menos uma unidade.', 'erro');
+            return;
+        }
+        enviarFormularioAjax(this, formLogin.dataset.urlLogin, false);
+    });
 </script>
 {% endblock %}

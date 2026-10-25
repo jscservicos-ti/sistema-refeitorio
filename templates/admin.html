@@ -3,6 +3,8 @@
 {% block content %}
 <div class="max-w-7xl mx-auto px-4 py-6"
      id="rotasAdmin"
+     data-eh-multi="{{ '1' if eh_multi else '0' }}"
+     data-unidade-atual="{{ session.get('unidade_id') }}"
      data-url-usuario="{{ url_for('salvar_usuario') }}"
      data-url-reset-senha="{{ url_for('resetar_senha_usuario') }}"
      data-url-refeicao="{{ url_for('salvar_refeicao') }}"
@@ -19,7 +21,7 @@
     {% if aba == 'dashboard' %}
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div class="bg-white p-6 rounded-xl shadow border-l-4 border-tema-primario">
-            <p class="text-sm text-gray-500 font-medium">Unidade Logada</p>
+            <p class="text-sm text-gray-500 font-medium">Unidade / Empresa Logada</p>
             <h3 class="text-xl font-bold text-gray-800 mt-1">{{ session.get('unidade_nome') }}</h3>
         </div>
         <div class="bg-white p-6 rounded-xl shadow border-l-4 border-emerald-500">
@@ -27,13 +29,13 @@
             <h3 class="text-2xl font-bold text-emerald-700 mt-1">{{ resumo_hoje.total_refeicoes }}</h3>
         </div>
         <div class="bg-white p-6 rounded-xl shadow border-l-4 border-amber-500">
-            <p class="text-sm text-gray-500 font-medium">Custo Acumulado Hoje</p>
+            <p class="text-sm text-gray-500 font-medium">Custo Acumulado Hoje na Unidade</p>
             <h3 class="text-2xl font-bold text-amber-700 mt-1">R$ {{ "%.2f"|format(resumo_hoje.custo_total) }}</h3>
         </div>
     </div>
 
     <div class="bg-white rounded-xl shadow p-6">
-        <h2 class="text-lg font-bold mb-4">Acesso Rápido aos Módulos</h2>
+        <h2 class="text-lg font-bold mb-4">Acesso Rápido aos Módulos ({{ session.get('unidade_nome') }})</h2>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <a href="{{ url_for('totem') }}" target="_blank" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2 bg-gray-50">
                 <i class="fa-solid fa-camera text-2xl text-tema-primario"></i>
@@ -90,19 +92,32 @@
                     </select>
                 </div>
                 <div>
-                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Unidades com Acesso</label>
-                    <div class="max-h-28 overflow-y-auto border rounded-lg p-2 space-y-1">
-                        {% for u in unidades %}
-                        <label class="flex items-center gap-2 text-sm">
-                            <input type="checkbox" name="unidades_ids" value="{{ u.id }}" class="chk-usr-unid">
-                            <span>{{ u.descricao }}</span>
-                        </label>
-                        {% endfor %}
+                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Unidades / Empresas com Acesso</label>
+                    <div class="max-h-28 overflow-y-auto border rounded-lg p-2 space-y-1 bg-gray-50">
+                        {% if eh_multi %}
+                            {% for u in unidades %}
+                            <label class="flex items-center gap-2 text-sm">
+                                <input type="checkbox" name="unidades_ids" value="{{ u.id }}" class="chk-usr-unid">
+                                <span>{{ u.descricao }}</span>
+                            </label>
+                            {% endfor %}
+                        {% else %}
+                            <label class="flex items-center gap-2 text-sm text-gray-700 font-semibold">
+                                <input type="checkbox" name="unidades_ids" value="{{ session.get('unidade_id') }}" checked class="chk-usr-unid pointer-events-none">
+                                <span>{{ session.get('unidade_nome') }} (Unidade Atual)</span>
+                            </label>
+                        {% endif %}
                     </div>
                 </div>
                 <div>
                     <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Permissões de Acesso</label>
                     <div class="grid grid-cols-1 gap-1 border rounded-lg p-2 text-sm">
+                        {% if eh_multi %}
+                        <label class="flex items-center gap-2 font-bold text-tema-primario bg-blue-50/60 p-1 rounded">
+                            <input type="checkbox" name="permissoes" value="multiempresa" class="chk-perm">
+                            MultiEmpresa (Acesso a todas as unidades)
+                        </label>
+                        {% endif %}
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_usuario" class="chk-perm"> Cadastrar Usuários</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_refeicao" class="chk-perm"> Cadastrar Refeição</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_grupo" class="chk-perm"> Cadastrar Grupos</label>
@@ -123,13 +138,13 @@
         </div>
 
         <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
-            <h2 class="text-lg font-bold mb-4">Usuários Cadastrados</h2>
+            <h2 class="text-lg font-bold mb-4">Usuários da Unidade ({{ session.get('unidade_nome') }})</h2>
             <table class="w-full text-sm text-left">
                 <thead class="bg-gray-100 text-gray-700 uppercase text-xs">
                     <tr>
                         <th class="p-3">Nome / Cargo</th>
                         <th class="p-3">CPF</th>
-                        <th class="p-3">Unidades</th>
+                        <th class="p-3">Vínculo</th>
                         <th class="p-3">Ativo</th>
                         <th class="p-3 text-right">Ações</th>
                     </tr>
@@ -138,7 +153,12 @@
                     {% for u in usuarios %}
                     <tr>
                         <td class="p-3">
-                            <div class="font-semibold">{{ u.nome }}</div>
+                            <div class="font-semibold flex items-center gap-1.5">
+                                {{ u.nome }}
+                                {% if 'multiempresa' in u.permissoes %}
+                                    <span class="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold uppercase">MultiEmpresa</span>
+                                {% endif %}
+                            </div>
                             <div class="text-xs text-gray-500">{{ u.cargo }}</div>
                         </td>
                         <td class="p-3">{{ u.cpf }}</td>
@@ -186,7 +206,7 @@
                 <input type="hidden" name="id" id="ref_id">
                 <div>
                     <label class="text-xs font-semibold uppercase text-gray-600">Descrição da Refeição</label>
-                    <input type="text" name="descricao" id="ref_descricao" required placeholder="Ex: Almoço, Jantar, Desjejum" class="w-full px-3 py-2 border rounded-lg">
+                    <input type="text" name="descricao" id="ref_descricao" required placeholder="Ex: Desjejum, Almoço, Lanche, Jantar" class="w-full px-3 py-2 border rounded-lg">
                 </div>
                 <div class="grid grid-cols-2 gap-2">
                     <div>
@@ -313,7 +333,7 @@
         </div>
 
         <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow">
-            <h2 class="text-lg font-bold mb-4">Grupos da Unidade</h2>
+            <h2 class="text-lg font-bold mb-4">Grupos da Unidade ({{ session.get('unidade_nome') }})</h2>
             <table class="w-full text-sm text-left">
                 <thead class="bg-gray-100 text-xs uppercase">
                     <tr>
@@ -353,7 +373,7 @@
     </div>
     {% endif %}
 
-    <!-- ABA: COLABORADORES (COM CAPTURA EM RAJADA DE 5 FOTOS) -->
+    <!-- ABA: COLABORADORES -->
     {% if aba == 'colaboradores' and 'cad_colaborador' in perms %}
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="bg-white p-6 rounded-xl shadow">
@@ -384,7 +404,6 @@
                     </select>
                 </div>
 
-                <!-- CAPTURA EM RAJADA PELA WEBCAM -->
                 <div>
                     <label class="text-xs font-semibold uppercase text-gray-600">Biometria Facial (Captura em Rajada)</label>
                     <div class="mt-1 border rounded-xl p-3 bg-gray-50 text-center">
@@ -401,12 +420,10 @@
                             <img id="previewColab" class="w-full h-56 bg-gray-200 rounded-lg object-cover hidden shadow-sm border border-gray-300">
                         </div>
 
-                        <!-- Barra de progresso da rajada -->
                         <div id="barraProgressoBox" class="hidden w-full bg-gray-200 h-2.5 rounded-full overflow-hidden mt-2">
                             <div id="barraProgressoFill" class="bg-emerald-600 h-full w-0 transition-all duration-300"></div>
                         </div>
 
-                        <!-- Miniaturas das 5 capturas da rajada -->
                         <div id="miniaturasRajada" class="flex justify-center gap-1.5 mt-2"></div>
 
                         <canvas id="canvasColab" class="hidden"></canvas>
@@ -424,7 +441,7 @@
                             </button>
                         </div>
                         <p class="text-[11px] text-gray-500 mt-2">
-                            A rajada tira 5 fotos em 2 segundos e aplica correção automática de iluminação (CLAHE).
+                            A rajada tira 5 fotos em 2 segundos e aplica correção automática de iluminação.
                         </p>
                     </div>
                 </div>
@@ -437,7 +454,7 @@
         </div>
 
         <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
-            <h2 class="text-lg font-bold mb-4">Colaboradores da Unidade</h2>
+            <h2 class="text-lg font-bold mb-4">Colaboradores da Unidade ({{ session.get('unidade_nome') }})</h2>
             <table class="w-full text-sm text-left">
                 <thead class="bg-gray-100 text-xs uppercase">
                     <tr>
@@ -548,7 +565,7 @@
         </div>
 
         <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow overflow-x-auto">
-            <h2 class="text-lg font-bold mb-4">Cardápios Cadastrados na Unidade</h2>
+            <h2 class="text-lg font-bold mb-4">Cardápios da Unidade ({{ session.get('unidade_nome') }})</h2>
             <table class="w-full text-sm text-left">
                 <thead class="bg-gray-100 text-xs uppercase">
                     <tr>
@@ -602,12 +619,16 @@
     {% if aba == 'unidades' and 'cad_unidade' in perms %}
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div class="bg-white p-6 rounded-xl shadow">
-            <h2 class="text-lg font-bold mb-4">Cadastrar Unidade</h2>
+            <h2 class="text-lg font-bold mb-4">
+                {{ 'Cadastrar / Editar Unidade' if eh_multi else 'Editar Unidade Atual' }}
+            </h2>
             <form id="formUnidade" class="space-y-3">
-                <input type="hidden" name="id" id="unid_id">
+                <input type="hidden" name="id" id="unid_id" value="{{ '' if eh_multi else session.get('unidade_id') }}">
                 <div>
                     <label class="text-xs font-semibold uppercase text-gray-600">Descrição da Unidade</label>
-                    <input type="text" name="descricao" id="unid_descricao" required class="w-full px-3 py-2 border rounded-lg">
+                    <input type="text" name="descricao" id="unid_descricao"
+                           value="{{ '' if eh_multi else session.get('unidade_nome') }}"
+                           required class="w-full px-3 py-2 border rounded-lg">
                 </div>
                 <div>
                     <label class="text-xs font-semibold uppercase text-gray-600">Ativo</label>
@@ -620,7 +641,7 @@
             </form>
         </div>
         <div class="md:col-span-2 bg-white p-6 rounded-xl shadow">
-            <h2 class="text-lg font-bold mb-4">Unidades Cadastradas</h2>
+            <h2 class="text-lg font-bold mb-4">Unidades Disponíveis no Seu Perfil</h2>
             <table class="w-full text-sm text-left">
                 <thead class="bg-gray-100 text-xs uppercase">
                     <tr><th class="p-3">ID</th><th class="p-3">Descrição</th><th class="p-3">Ativo</th><th class="p-3 text-right">Ação</th></tr>
@@ -700,7 +721,7 @@
     <!-- ABA: LOGS DE AUDITORIA -->
     {% if aba == 'logs' and 'logs' in perms %}
     <div class="bg-white p-6 rounded-xl shadow">
-        <h2 class="text-lg font-bold mb-4">Auditoria e Logs do Sistema</h2>
+        <h2 class="text-lg font-bold mb-4">Auditoria e Logs da Unidade ({{ session.get('unidade_nome') }})</h2>
         <form id="formFiltroLogs" class="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
             <div>
                 <label class="text-xs font-semibold uppercase text-gray-600">Data Inicial</label>
@@ -752,7 +773,7 @@
     {% if aba == 'configuracoes' and 'configuracoes' in perms %}
     <div class="bg-white p-6 rounded-xl shadow max-w-3xl mx-auto">
         <h2 class="text-xl font-bold mb-2">Personalização Visual ({{ session.get('unidade_nome') }})</h2>
-        <p class="text-sm text-gray-500 mb-6">O tema e a logo selecionados são aplicados nas telas administrativas, relatórios em PDF e no Totem de Entrada.</p>
+        <p class="text-sm text-gray-500 mb-6">O tema e a logo selecionados são aplicados nas telas administrativas, relatórios em PDF e no Totem de Entrada desta unidade.</p>
 
         <form id="formConfiguracoes" enctype="multipart/form-data" class="space-y-6">
             <div>
@@ -792,6 +813,7 @@
 {% block scripts_extra %}
 <script>
     const rotasEl = document.getElementById('rotasAdmin');
+    const ehMultiEmpresa = rotasEl.dataset.ehMulti === '1';
 
     document.querySelectorAll('.js-cor-preview').forEach(el => {
         el.style.backgroundColor = el.dataset.cor;
@@ -817,9 +839,6 @@
         }
     });
 
-    // =========================================================================
-    // CAPTURA EM RAJADA (5 FOTOS EM 2 SEGUNDOS) PARA BIOMETRIA DO COLABORADOR
-    // =========================================================================
     let streamColab = null;
 
     async function ativarCameraColab() {
@@ -876,7 +895,6 @@
             const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
             fotosCapturadas.push(dataUrl);
 
-            // Cria miniatura da foto capturada
             const thumb = document.createElement('img');
             thumb.src = dataUrl;
             thumb.className = 'w-10 h-10 rounded object-cover border-2 border-emerald-500 shadow-sm';
@@ -960,14 +978,24 @@
         document.getElementById('usr_cpf').value = d.cpf;
         document.getElementById('usr_cargo').value = d.cargo;
         document.getElementById('usr_ativo').value = d.ativo;
-        document.querySelectorAll('.chk-usr-unid').forEach(chk => { chk.checked = unidadesIds.includes(parseInt(chk.value, 10)); });
-        document.querySelectorAll('.chk-perm').forEach(chk => { chk.checked = permissoes.includes(chk.value); });
+
+        if (ehMultiEmpresa) {
+            document.querySelectorAll('.chk-usr-unid').forEach(chk => {
+                chk.checked = unidadesIds.includes(parseInt(chk.value, 10));
+            });
+        }
+        document.querySelectorAll('.chk-perm').forEach(chk => {
+            chk.checked = permissoes.includes(chk.value);
+        });
     }
 
     function limparFormUsuario() {
         document.getElementById('formUsuario').reset();
         document.getElementById('usr_id').value = '';
         document.getElementById('tituloFormUsuario').innerText = 'Novo Usuário';
+        if (!ehMultiEmpresa) {
+            document.querySelectorAll('.chk-usr-unid').forEach(chk => { chk.checked = true; });
+        }
     }
 
     function limparFormRefeicao() {
@@ -1039,7 +1067,7 @@
             const tbody = document.getElementById('tabelaLogsBody');
             tbody.innerHTML = '';
             if (!d.logs || d.logs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Nenhum registro encontrado no período.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Nenhum registro encontrado nesta unidade no período.</td></tr>';
                 return;
             }
             d.logs.forEach(item => {

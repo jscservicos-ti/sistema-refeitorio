@@ -23,7 +23,7 @@ app.secret_key = os.environ.get('SECRET_KEY', '9f8d7a6b5c4e3f2a1b0c9d8e7f6a5b4c3
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25MB para suportar envio de rajada de fotos
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'refeitorio.db')
@@ -34,14 +34,12 @@ os.makedirs(MODELS_FOLDER, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 
-# Modelos ONNX oficiais (YuNet Detector + SFace Hypersphere Recognizer)
 YUNET_PATH = os.path.join(MODELS_FOLDER, 'face_detection_yunet_2023mar.onnx')
 SFACE_PATH = os.path.join(MODELS_FOLDER, 'face_recognition_sface_2021dec.onnx')
 
 YUNET_URL = 'https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx'
 SFACE_URL = 'https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx'
 
-# Limiar de similaridade de cosseno (0.38 oferece alta precisão e tolerância a óculos/barba/iluminação)
 LIMIAR_SIMILARIDADE = 0.38
 MAX_VETORES_POR_COLABORADOR = 15
 
@@ -73,6 +71,9 @@ def limpar_cpf_cnpj(valor):
 
 def arquivo_permitido(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def usuario_eh_multiempresa():
+    return 'multiempresa' in session.get('permissoes', [])
 
 # ==============================================================================
 # MOTOR DE INTELIGÊNCIA ARTIFICIAL FACIAL (YUNET + SFACE + CLAHE)
@@ -118,10 +119,6 @@ def obter_motores_faciais():
     return _detector_yn, _recognizer_sf
 
 def corrigir_iluminacao_clahe(img_bgr):
-    """
-    Aplica equalização adaptativa de histograma (CLAHE) no canal de luminância (LAB)
-    para corrigir sombras no rosto, contraluz ou iluminação forte sem distorcer as cores.
-    """
     try:
         lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -145,11 +142,6 @@ def decodificar_base64_para_bgr(b64_str):
         return None
 
 def analisar_rosto_bgr(img_bgr):
-    """
-    Recebe uma imagem BGR, aplica correção automática de luz (CLAHE),
-    detecta o maior rosto na imagem, alinha os 5 pontos faciais (112x112)
-    e retorna (vetor_normalizado_128d, bbox_relativo, proporcao_area).
-    """
     if img_bgr is None or img_bgr.size == 0:
         return None, None, 0.0
 
@@ -161,7 +153,6 @@ def analisar_rosto_bgr(img_bgr):
         img_corrigida = corrigir_iluminacao_clahe(img_bgr)
         h, w = img_corrigida.shape[:2]
 
-        # Redimensiona se a imagem for muito grande para acelerar a detecção
         escala = 1.0
         largura_max = 640
         if w > largura_max:
@@ -179,11 +170,9 @@ def analisar_rosto_bgr(img_bgr):
         if faces is None or len(faces) == 0:
             return None, None, 0.0
 
-        # Seleciona o maior rosto (mais próximo da câmera)
         maior_face = max(faces, key=lambda f: f[2] * f[3])
         fx, fy, fw, fh = [float(v) for v in maior_face[:4]]
 
-        # Calcula proporção do rosto em relação à tela toda
         proporcao = (fw * fh) / float(nova_w * nova_h)
         bbox_rel = {
             'x': max(0.0, fx / nova_w),
@@ -192,7 +181,6 @@ def analisar_rosto_bgr(img_bgr):
             'h': min(1.0, fh / nova_h)
         }
 
-        # Alinhamento geométrico de 5 pontos (olhos, nariz e boca) para 112x112
         rosto_alinhado = recognizer.alignCrop(img_proc, maior_face)
         feat = recognizer.feature(rosto_alinhado)
         vetor = feat.flatten().astype(np.float32)
@@ -216,11 +204,6 @@ def comparar_vetor_com_lista(vetor_consulta, lista_vetores):
     return melhor_score
 
 def adicionar_vetor_aprendizado_continuo(colaborador_id, novo_vetor):
-    """
-    Aprendizado Contínuo: adiciona a nova aparência do colaborador ao banco,
-    preservando sempre os 5 vetores originais da rajada de cadastro e
-    rotacionando até 10 vetores aprendidos no dia a dia.
-    """
     if not novo_vetor:
         return
     try:
@@ -231,7 +214,6 @@ def adicionar_vetor_aprendizado_continuo(colaborador_id, novo_vetor):
             return
         atuais = json.loads(row['face_embeddings'] or '[]')
 
-        # Se já tiver um vetor quase idêntico (> 0.82), não precisa duplicar
         melhor_atual = comparar_vetor_com_lista(novo_vetor, atuais)
         if melhor_atual > 0.82 and len(atuais) >= 3:
             conn.close()
@@ -240,7 +222,6 @@ def adicionar_vetor_aprendizado_continuo(colaborador_id, novo_vetor):
         if len(atuais) < MAX_VETORES_POR_COLABORADOR:
             atuais.append(novo_vetor)
         else:
-            # Mantém os 5 primeiros (cadastro inicial) e atualiza a janela dos últimos 10
             originais = atuais[:5]
             aprendidos = atuais[5:]
             aprendidos.append(novo_vetor)
@@ -277,7 +258,7 @@ def registrar_log(tabela, acao, descricao, unidade_id=None):
         conn = get_db()
         usuario_id = session.get('usuario_id')
         usuario_nome = session.get('usuario_nome', 'Sistema / Totem')
-        uid = unidade_id or session.get('unidade_id')
+        uid = unidade_id or session.get('unidade_id') or session.get('totem_unidade_id')
         agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         conn.execute('''
             INSERT INTO logs (data_hora, usuario_id, usuario_nome, unidade_id, tabela, acao, descricao)
@@ -381,7 +362,6 @@ def init_db():
         )
     ''')
 
-    # Migração automática caso a tabela colaboradores já exista sem a coluna face_embeddings
     colunas_colab = [col['name'] for col in c.execute("PRAGMA table_info(colaboradores)").fetchall()]
     if 'face_embeddings' not in colunas_colab:
         c.execute("ALTER TABLE colaboradores ADD COLUMN face_embeddings TEXT DEFAULT '[]'")
@@ -419,6 +399,20 @@ def init_db():
         )
     ''')
 
+    # Garantir que não existam duplicidades antigas e aplicar restrição única (1 entrada por refeição por dia)
+    c.execute('''
+        DELETE FROM registros_refeicao
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM registros_refeicao
+            GROUP BY colaborador_id, refeicao_id, data_registro
+        )
+    ''')
+    c.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_unico_colab_refeicao_dia
+        ON registros_refeicao (colaborador_id, refeicao_id, data_registro)
+    ''')
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -440,10 +434,10 @@ def init_db():
     else:
         unidade_id = unid['id']
 
-    usr = c.execute('SELECT id FROM usuarios LIMIT 1').fetchone()
+    usr = c.execute('SELECT id, permissoes FROM usuarios ORDER BY id ASC LIMIT 1').fetchone()
     if not usr:
         todas_perms = json.dumps([
-            'cad_usuario', 'cad_refeicao', 'cad_grupo', 'cad_colaborador',
+            'multiempresa', 'cad_usuario', 'cad_refeicao', 'cad_grupo', 'cad_colaborador',
             'cad_cardapio', 'cad_unidade', 'relatorios', 'logs', 'configuracoes'
         ])
         senha_padrao = generate_password_hash('123')
@@ -453,10 +447,15 @@ def init_db():
         ''', (senha_padrao, todas_perms))
         usuario_id = c.lastrowid
         c.execute('INSERT INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (usuario_id, unidade_id))
+    else:
+        # Garante que o primeiro Administrador do sistema possua a permissão MultiEmpresa após a atualização
+        perms_admin = json.loads(usr['permissoes'] or '[]')
+        if 'multiempresa' not in perms_admin:
+            perms_admin.append('multiempresa')
+            c.execute('UPDATE usuarios SET permissoes = ? WHERE id = ?', (json.dumps(perms_admin), usr['id']))
 
     conn.commit()
 
-    # Migra fotos antigas já cadastradas que ainda não possuam vetor facial extraído
     colabs_sem_vetor = c.execute(
         "SELECT id, foto_path FROM colaboradores WHERE foto_path != '' AND (face_embeddings IS NULL OR face_embeddings = '[]')"
     ).fetchall()
@@ -519,7 +518,7 @@ def injetar_globais():
     }
 
 # ==============================================================================
-# ROTAS DE LOGIN E REDEFINIÇÃO DE SENHA
+# ROTAS DE LOGIN, BUSCA DE UNIDADES POR CPF E REDEFINIÇÃO DE SENHA
 # ==============================================================================
 @app.route('/')
 def index():
@@ -529,10 +528,38 @@ def index():
 
 @app.route('/login', methods=['GET'])
 def login():
+    return render_template('login.html')
+
+@app.route('/api/unidades-por-cpf', methods=['POST'])
+def api_unidades_por_cpf():
+    """
+    Retorna apenas as unidades ativas às quais o CPF informado possui vínculo
+    (ou todas as unidades ativas caso o usuário possua a permissão MultiEmpresa).
+    """
+    cpf = limpar_cpf_cnpj(request.form.get('cpf'))
+    if len(cpf) != 11:
+        return jsonify({'status': 'sucesso', 'unidades': []})
+
     conn = get_db()
-    unidades = conn.execute('SELECT id, descricao FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()
+    user = conn.execute('SELECT id, ativo, permissoes FROM usuarios WHERE cpf = ?', (cpf,)).fetchone()
+    if not user or user['ativo'] == 0:
+        conn.close()
+        return jsonify({'status': 'sucesso', 'unidades': []})
+
+    perms = json.loads(user['permissoes'] or '[]')
+    if 'multiempresa' in perms:
+        unidades = conn.execute('SELECT id, descricao FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()
+    else:
+        unidades = conn.execute('''
+            SELECT u.id, u.descricao
+            FROM unidades u
+            JOIN usuario_unidades uu ON uu.unidade_id = u.id
+            WHERE uu.usuario_id = ? AND u.ativo = 1
+            ORDER BY u.descricao
+        ''', (user['id'],)).fetchall()
     conn.close()
-    return render_template('login.html', unidades=unidades)
+
+    return jsonify({'status': 'sucesso', 'unidades': [dict(u) for u in unidades]})
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
@@ -553,21 +580,33 @@ def api_login():
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': 'Este usuário está inativo. Contate o administrador.'})
 
-    vinculo = conn.execute('SELECT 1 FROM usuario_unidades WHERE usuario_id = ? AND unidade_id = ?', (user['id'], unidade_id)).fetchone()
-    unid = conn.execute('SELECT * FROM unidades WHERE id = ? AND ativo = 1', (unidade_id,)).fetchone()
-    conn.close()
+    perms = json.loads(user['permissoes'] or '[]')
+    eh_multi = 'multiempresa' in perms
 
-    if not vinculo or not unid:
-        return jsonify({'status': 'erro', 'mensagem': 'Você não possui permissão de acesso para a unidade selecionada.'})
+    unid = conn.execute('SELECT * FROM unidades WHERE id = ? AND ativo = 1', (unidade_id,)).fetchone()
+    if not unid:
+        conn.close()
+        return jsonify({'status': 'erro', 'mensagem': 'Unidade inválida ou inativa.'})
+
+    if not eh_multi:
+        vinculo = conn.execute(
+            'SELECT 1 FROM usuario_unidades WHERE usuario_id = ? AND unidade_id = ?',
+            (user['id'], unidade_id)
+        ).fetchone()
+        if not vinculo:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Você não possui permissão de acesso para a unidade selecionada.'})
+
+    conn.close()
 
     session['usuario_id'] = user['id']
     session['usuario_nome'] = user['nome']
     session['unidade_id'] = unidade_id
     session['unidade_nome'] = unid['descricao']
     session['primeiro_acesso'] = user['primeiro_acesso']
-    session['permissoes'] = json.loads(user['permissoes'])
+    session['permissoes'] = perms
 
-    registrar_log('usuarios', 'LOGIN', f"Usuário '{user['nome']}' acessou a unidade '{unid['descricao']}'.")
+    registrar_log('usuarios', 'LOGIN', f"Usuário '{user['nome']}' acessou a unidade '{unid['descricao']}'.", unidade_id)
 
     if user['primeiro_acesso'] == 1:
         return jsonify({'status': 'sucesso', 'redirect': url_for('trocar_senha')})
@@ -587,7 +626,6 @@ def api_trocar_senha():
     if nova_senha != confirmar:
         return jsonify({'status': 'erro', 'mensagem': 'A confirmação de senha não confere.'})
 
-    # Regra: Mínimo de 8 caracteres, com letras, números e símbolos
     if len(nova_senha) < 8 or not re.search(r'[A-Za-z]', nova_senha) or not re.search(r'\d', nova_senha) or not re.search(r'[^A-Za-z0-9]', nova_senha):
         return jsonify({'status': 'erro', 'mensagem': 'A nova senha deve conter no mínimo 8 caracteres, incluindo letras, números e símbolos.'})
 
@@ -610,17 +648,23 @@ def logout():
     return redirect(url_for('login'))
 
 # ==============================================================================
-# MÓDULO 1: PAINEL ADMINISTRATIVO
+# MÓDULO 1: PAINEL ADMINISTRATIVO (ISOLADO POR UNIDADE / MULTIEMPRESA)
 # ==============================================================================
 @app.route('/admin')
 @login_obrigatorio
 def admin_painel():
     aba = request.args.get('aba', 'dashboard')
     uid = session['unidade_id']
+    eh_multi = usuario_eh_multiempresa()
     conn = get_db()
 
-    unidades = conn.execute('SELECT * FROM unidades ORDER BY descricao').fetchall()
-    unidades_ativas = conn.execute('SELECT * FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()
+    if eh_multi:
+        unidades = conn.execute('SELECT * FROM unidades ORDER BY descricao').fetchall()
+        unidades_ativas = conn.execute('SELECT * FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()
+    else:
+        unidades = conn.execute('SELECT * FROM unidades WHERE id = ?', (uid,)).fetchall()
+        unidades_ativas = unidades
+
     grupos = conn.execute('SELECT * FROM grupos WHERE unidade_id = ? ORDER BY descricao', (uid,)).fetchall()
     refeicoes = conn.execute('SELECT * FROM refeicoes WHERE unidade_id = ? ORDER BY hora_inicio', (uid,)).fetchall()
 
@@ -629,8 +673,8 @@ def admin_painel():
         FROM refeicao_grupos rg
         JOIN grupos g ON g.id = rg.grupo_id
         JOIN refeicoes r ON r.id = rg.refeicao_id
-        WHERE g.unidade_id = ?
-    ''', (uid,)).fetchall()
+        WHERE g.unidade_id = ? AND r.unidade_id = ?
+    ''', (uid, uid)).fetchall()
 
     mapa_ref_grupos = {}
     mapa_grupo_refs = {}
@@ -659,14 +703,38 @@ def admin_painel():
         ORDER BY data_vigencia DESC, hora_inicio ASC
     ''', (uid,)).fetchall()
 
-    usuarios_db = conn.execute('SELECT * FROM usuarios ORDER BY nome').fetchall()
+    # Listagem de usuários respeitando a permissão MultiEmpresa e a unidade logada
+    if eh_multi:
+        usuarios_db = conn.execute('''
+            SELECT DISTINCT u.* FROM usuarios u
+            LEFT JOIN usuario_unidades uu ON uu.usuario_id = u.id
+            WHERE uu.unidade_id = ? OR u.permissoes LIKE '%"multiempresa"%'
+            ORDER BY u.nome
+        ''', (uid,)).fetchall()
+    else:
+        usuarios_db = conn.execute('''
+            SELECT u.* FROM usuarios u
+            JOIN usuario_unidades uu ON uu.usuario_id = u.id
+            WHERE uu.unidade_id = ? AND u.permissoes NOT LIKE '%"multiempresa"%'
+            ORDER BY u.nome
+        ''', (uid,)).fetchall()
+
     usuarios = []
     for u in usuarios_db:
-        unids_u = conn.execute('''
-            SELECT u.id, u.descricao FROM usuario_unidades uu
-            JOIN unidades u ON u.id = uu.unidade_id
-            WHERE uu.usuario_id = ?
-        ''', (u['id'],)).fetchall()
+        if eh_multi:
+            unids_u = conn.execute('''
+                SELECT u.id, u.descricao FROM usuario_unidades uu
+                JOIN unidades u ON u.id = uu.unidade_id
+                WHERE uu.usuario_id = ?
+            ''', (u['id'],)).fetchall()
+        else:
+            # Usuário comum visualiza apenas o vínculo com a própria unidade
+            unids_u = conn.execute('''
+                SELECT u.id, u.descricao FROM usuario_unidades uu
+                JOIN unidades u ON u.id = uu.unidade_id
+                WHERE uu.usuario_id = ? AND uu.unidade_id = ?
+            ''', (u['id'], uid)).fetchall()
+
         usuarios.append({
             'id': u['id'],
             'nome': u['nome'],
@@ -689,6 +757,7 @@ def admin_painel():
     return render_template(
         'admin.html',
         aba=aba,
+        eh_multi=eh_multi,
         unidades=unidades,
         unidades_ativas=unidades_ativas,
         grupos=grupos,
@@ -714,20 +783,52 @@ def salvar_usuario():
     permissoes = request.form.getlist('permissoes')
     unidades_ids = request.form.getlist('unidades_ids')
 
+    uid_logada = session['unidade_id']
+    eh_multi = usuario_eh_multiempresa()
+
+    # Se não for MultiEmpresa, trava a unidade apenas na unidade logada e proíbe conceder MultiEmpresa
+    if not eh_multi:
+        unidades_ids = [str(uid_logada)]
+        if 'multiempresa' in permissoes:
+            permissoes.remove('multiempresa')
+
     if not nome or len(cpf) != 11 or not unidades_ids:
         return jsonify({'status': 'erro', 'mensagem': 'Preencha Nome, CPF válido (11 dígitos) e vincule ao menos uma Unidade.'})
 
-    if uid_edit == session['usuario_id'] and 'cad_usuario' not in permissoes:
-        permissoes.append('cad_usuario')
+    if uid_edit == session['usuario_id']:
+        if 'cad_usuario' not in permissoes:
+            permissoes.append('cad_usuario')
+        if eh_multi and 'multiempresa' not in permissoes:
+            permissoes.append('multiempresa')
 
     perms_json = json.dumps(permissoes)
     conn = get_db()
     try:
         if uid_edit:
+            alvo = conn.execute('SELECT * FROM usuarios WHERE id = ?', (uid_edit,)).fetchone()
+            if not alvo:
+                conn.close()
+                return jsonify({'status': 'erro', 'mensagem': 'Usuário não encontrado.'})
+
+            if not eh_multi:
+                alvo_perms = json.loads(alvo['permissoes'] or '[]')
+                pertence = conn.execute(
+                    'SELECT 1 FROM usuario_unidades WHERE usuario_id = ? AND unidade_id = ?',
+                    (uid_edit, uid_logada)
+                ).fetchone()
+                if not pertence or 'multiempresa' in alvo_perms:
+                    conn.close()
+                    return jsonify({'status': 'erro', 'mensagem': 'Você não tem permissão para alterar este usuário.'}), 403
+
             conn.execute('UPDATE usuarios SET nome=?, cpf=?, cargo=?, ativo=?, permissoes=? WHERE id=?', (nome, cpf, cargo, ativo, perms_json, uid_edit))
-            conn.execute('DELETE FROM usuario_unidades WHERE usuario_id=?', (uid_edit,))
-            for un_id in unidades_ids:
-                conn.execute('INSERT INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (uid_edit, int(un_id)))
+
+            if eh_multi:
+                conn.execute('DELETE FROM usuario_unidades WHERE usuario_id=?', (uid_edit,))
+                for un_id in unidades_ids:
+                    conn.execute('INSERT INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (uid_edit, int(un_id)))
+            else:
+                conn.execute('INSERT OR IGNORE INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (uid_edit, uid_logada))
+
             conn.commit()
             registrar_log('usuarios', 'ALTERAÇÃO', f"Alterado usuário '{nome}' (CPF: {cpf}).")
         else:
@@ -749,11 +850,25 @@ def salvar_usuario():
 @requer_permissao('cad_usuario')
 def resetar_senha_usuario():
     uid_alvo = request.form.get('id', type=int)
+    uid_logada = session['unidade_id']
+    eh_multi = usuario_eh_multiempresa()
+
     conn = get_db()
-    u = conn.execute('SELECT nome, cpf FROM usuarios WHERE id = ?', (uid_alvo,)).fetchone()
+    u = conn.execute('SELECT nome, cpf, permissoes FROM usuarios WHERE id = ?', (uid_alvo,)).fetchone()
     if not u:
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': 'Usuário não encontrado.'})
+
+    if not eh_multi:
+        alvo_perms = json.loads(u['permissoes'] or '[]')
+        pertence = conn.execute(
+            'SELECT 1 FROM usuario_unidades WHERE usuario_id = ? AND unidade_id = ?',
+            (uid_alvo, uid_logada)
+        ).fetchone()
+        if not pertence or 'multiempresa' in alvo_perms:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Você não tem permissão para resetar a senha deste usuário.'}), 403
+
     senha_padrao = generate_password_hash('123')
     conn.execute('UPDATE usuarios SET senha_hash = ?, primeiro_acesso = 1 WHERE id = ?', (senha_padrao, uid_alvo))
     conn.commit()
@@ -768,12 +883,21 @@ def salvar_unidade():
     id_unid = request.form.get('id', type=int)
     descricao = request.form.get('descricao', '').strip()
     ativo = request.form.get('ativo', type=int, default=1)
+    eh_multi = usuario_eh_multiempresa()
+    uid_logada = session['unidade_id']
+
     if not descricao:
         return jsonify({'status': 'erro', 'mensagem': 'Informe a descrição da unidade.'})
+
+    if not eh_multi:
+        if not id_unid or id_unid != uid_logada:
+            return jsonify({'status': 'erro', 'mensagem': 'Apenas usuários com a permissão MultiEmpresa podem criar ou editar outras unidades.'}), 403
 
     conn = get_db()
     if id_unid:
         conn.execute('UPDATE unidades SET descricao=?, ativo=? WHERE id=?', (descricao, ativo, id_unid))
+        if id_unid == uid_logada:
+            session['unidade_nome'] = descricao
         conn.commit()
         registrar_log('unidades', 'ALTERAÇÃO', f"Alterada unidade '{descricao}'.")
     else:
@@ -801,17 +925,25 @@ def salvar_grupo():
 
     conn = get_db()
     if id_grp:
+        pertence = conn.execute('SELECT 1 FROM grupos WHERE id=? AND unidade_id=?', (id_grp, uid)).fetchone()
+        if not pertence:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Grupo não pertence a esta unidade.'}), 403
         conn.execute('UPDATE grupos SET descricao=?, ativo=? WHERE id=? AND unidade_id=?', (descricao, ativo, id_grp, uid))
         conn.execute('DELETE FROM refeicao_grupos WHERE grupo_id=?', (id_grp,))
         for r_id in refeicoes_ids:
-            conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (int(r_id), id_grp))
+            ref_valida = conn.execute('SELECT 1 FROM refeicoes WHERE id=? AND unidade_id=?', (int(r_id), uid)).fetchone()
+            if ref_valida:
+                conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (int(r_id), id_grp))
         conn.commit()
         registrar_log('grupos', 'ALTERAÇÃO', f"Alterado grupo '{descricao}'.")
     else:
         cur = conn.execute('INSERT INTO grupos (descricao, ativo, unidade_id) VALUES (?, ?, ?)', (descricao, ativo, uid))
         novo_grp = cur.lastrowid
         for r_id in refeicoes_ids:
-            conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (int(r_id), novo_grp))
+            ref_valida = conn.execute('SELECT 1 FROM refeicoes WHERE id=? AND unidade_id=?', (int(r_id), uid)).fetchone()
+            if ref_valida:
+                conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (int(r_id), novo_grp))
         conn.commit()
         registrar_log('grupos', 'INCLUSÃO', f"Cadastrado grupo '{descricao}'.")
     conn.close()
@@ -840,23 +972,30 @@ def salvar_refeicao():
 
     conn = get_db()
     if id_ref:
+        pertence = conn.execute('SELECT 1 FROM refeicoes WHERE id=? AND unidade_id=?', (id_ref, uid)).fetchone()
+        if not pertence:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Refeição não pertence a esta unidade.'}), 403
         conn.execute('UPDATE refeicoes SET descricao=?, hora_inicio=?, hora_fim=?, custo=?, ativo=? WHERE id=? AND unidade_id=?', (descricao, hora_inicio, hora_fim, custo_float, ativo, id_ref, uid))
         conn.execute('DELETE FROM refeicao_grupos WHERE refeicao_id=?', (id_ref,))
         for g_id in grupos_ids:
-            conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (id_ref, int(g_id)))
+            grp_valido = conn.execute('SELECT 1 FROM grupos WHERE id=? AND unidade_id=?', (int(g_id), uid)).fetchone()
+            if grp_valido:
+                conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (id_ref, int(g_id)))
         conn.commit()
         registrar_log('refeicoes', 'ALTERAÇÃO', f"Alterada refeição '{descricao}'.")
     else:
         cur = conn.execute('INSERT INTO refeicoes (descricao, hora_inicio, hora_fim, custo, ativo, unidade_id) VALUES (?, ?, ?, ?, ?, ?)', (descricao, hora_inicio, hora_fim, custo_float, ativo, uid))
         novo_ref = cur.lastrowid
         for g_id in grupos_ids:
-            conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (novo_ref, int(g_id)))
+            grp_valido = conn.execute('SELECT 1 FROM grupos WHERE id=? AND unidade_id=?', (int(g_id), uid)).fetchone()
+            if grp_valido:
+                conn.execute('INSERT INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (novo_ref, int(g_id)))
         conn.commit()
         registrar_log('refeicoes', 'INCLUSÃO', f"Cadastrada refeição '{descricao}'.")
     conn.close()
     return jsonify({'status': 'sucesso', 'mensagem': 'Refeição salva com sucesso!'})
 
-# --- SALVAR COLABORADOR COM CAPTURA EM RAJADA + CLAHE ---
 @app.route('/api/colaborador/salvar', methods=['POST'])
 @login_obrigatorio
 @requer_permissao('cad_colaborador')
@@ -886,12 +1025,11 @@ def salvar_colaborador():
     novos_vetores = []
 
     if lista_b64:
-        for idx, b64_item in enumerate(lista_b64):
+        for b64_item in lista_b64:
             img_bgr = decodificar_base64_para_bgr(b64_item)
             if img_bgr is None:
                 continue
 
-            # Salva o primeiro frame válido como foto de perfil do colaborador
             if foto_rel_path is None:
                 nome_seguro = f"colab_{uid}_{cpf}_{uuid.uuid4().hex[:8]}.jpg"
                 caminho_completo = os.path.join(UPLOAD_FOLDER, nome_seguro)
@@ -909,6 +1047,11 @@ def salvar_colaborador():
             })
 
     conn = get_db()
+    grp_valido = conn.execute('SELECT 1 FROM grupos WHERE id=? AND unidade_id=?', (grupo_id, uid)).fetchone()
+    if not grp_valido:
+        conn.close()
+        return jsonify({'status': 'erro', 'mensagem': 'Grupo inválido para esta unidade.'}), 403
+
     try:
         if id_col:
             if foto_rel_path and novos_vetores:
@@ -922,14 +1065,14 @@ def salvar_colaborador():
                     WHERE id=? AND unidade_id=?
                 ''', (nome, cpf, grupo_id, ativo, id_col, uid))
             conn.commit()
-            registrar_log('colaboradores', 'ALTERAÇÃO', f"Alterado colaborador '{nome}' (CPF: {cpf}) - {len(novos_vetores)} ângulos faciais processados.")
+            registrar_log('colaboradores', 'ALTERAÇÃO', f"Alterado colaborador '{nome}' (CPF: {cpf}).")
         else:
             conn.execute('''
                 INSERT INTO colaboradores (nome, cpf, foto_path, face_embeddings, grupo_id, ativo, unidade_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (nome, cpf, foto_rel_path or '', json.dumps(novos_vetores), grupo_id, ativo, uid))
             conn.commit()
-            registrar_log('colaboradores', 'INCLUSÃO', f"Cadastrado colaborador '{nome}' (CPF: {cpf}) com {len(novos_vetores)} ângulos faciais.")
+            registrar_log('colaboradores', 'INCLUSÃO', f"Cadastrado colaborador '{nome}' (CPF: {cpf}).")
     except sqlite3.IntegrityError:
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': 'Já existe um colaborador com este CPF cadastrado nesta unidade.'})
@@ -977,16 +1120,18 @@ def salvar_cardapio():
             return jsonify({'status': 'conflito', 'mensagem': f"Já existe outro cardápio ativo nesta mesma data e horário ({desc_conflito}). Deseja inativá-lo para ativar este?"})
         elif conflitos and forcar_inativacao:
             for c in conflitos:
-                conn.execute('UPDATE cardapios SET ativo = 0 WHERE id = ?', (c['id'],))
+                conn.execute('UPDATE cardapios SET ativo = 0 WHERE id = ? AND unidade_id = ?', (c['id'], uid))
 
     if id_card:
         conn.execute('UPDATE cardapios SET data_vigencia=?, hora_inicio=?, hora_fim=?, guarnicao=?, proteinas=?, saladas=?, sobremesas=?, bebidas=?, ativo=? WHERE id=? AND unidade_id=?',
                      (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, id_card, uid))
         conn.commit()
+        registrar_log('cardapios', 'ALTERAÇÃO', f"Alterado cardápio de {data_vigencia} ({hora_inicio}-{hora_fim}).")
     else:
         conn.execute('INSERT INTO cardapios (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, unidade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                      (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, uid))
         conn.commit()
+        registrar_log('cardapios', 'INCLUSÃO', f"Cadastrado cardápio de {data_vigencia} ({hora_inicio}-{hora_fim}).")
     conn.close()
     return jsonify({'status': 'sucesso', 'mensagem': 'Cardápio salvo com sucesso!'})
 
@@ -1032,9 +1177,10 @@ def consultar_logs():
     tabela = request.form.get('tabela', 'TODAS')
     uid = session['unidade_id']
 
+    # Isolamento estrito de Logs apenas para a unidade logada
     query = '''
         SELECT data_hora, usuario_nome, tabela, acao, descricao FROM logs
-        WHERE (unidade_id = ? OR unidade_id IS NULL)
+        WHERE unidade_id = ?
         AND substr(data_hora, 1, 10) >= ? AND substr(data_hora, 1, 10) <= ?
     '''
     params = [uid, data_ini, data_fim]
@@ -1049,7 +1195,7 @@ def consultar_logs():
     return jsonify({'status': 'sucesso', 'logs': [dict(r) for r in rows]})
 
 # ==============================================================================
-# RELATÓRIOS EM PDF
+# RELATÓRIOS EM PDF (UNIFICADOS / ISOLADOS POR UNIDADE LOGADA)
 # ==============================================================================
 class RelatorioPDF(FPDF):
     def __init__(self, titulo, unidade_nome, periodo_str, logo_path):
@@ -1212,12 +1358,11 @@ def gerar_relatorio_pdf():
     return send_file(caminho_pdf, as_attachment=True, download_name=f"relatorio_{tipo}_{data_ini}_{data_fim}.pdf")
 
 # ==============================================================================
-# MÓDULO 2: TOTEM DE ENTRADA COM RECONHECIMENTO FACIAL NO BACKEND PYTHON
+# MÓDULO 2: TOTEM DE ENTRADA (1 ENTRADA POR REFEIÇÃO NO DIA)
 # ==============================================================================
 @app.route('/totem')
 def totem():
     conn = get_db()
-    unidades = conn.execute('SELECT id, descricao FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()
     totem_uid = session.get('totem_unidade_id')
     qtd_rostos_ativos = 0
     if totem_uid:
@@ -1227,7 +1372,7 @@ def totem():
         ).fetchall()
         qtd_rostos_ativos = len(cols)
     conn.close()
-    return render_template('totem.html', unidades=unidades, totem_uid=totem_uid, qtd_rostos_ativos=qtd_rostos_ativos)
+    return render_template('totem.html', totem_uid=totem_uid, qtd_rostos_ativos=qtd_rostos_ativos)
 
 @app.route('/api/totem/autenticar-unidade', methods=['POST'])
 def totem_autenticar_unidade():
@@ -1235,18 +1380,30 @@ def totem_autenticar_unidade():
     cpf = limpar_cpf_cnpj(request.form.get('cpf'))
     senha = request.form.get('senha', '')
 
+    if not cpf or not senha or not unidade_id:
+        return jsonify({'status': 'erro', 'mensagem': 'Informe CPF, senha e selecione a unidade.'})
+
     conn = get_db()
     user = conn.execute('SELECT * FROM usuarios WHERE cpf = ? AND ativo = 1', (cpf,)).fetchone()
     if not user or not check_password_hash(user['senha_hash'], senha):
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': 'Credenciais inválidas para liberar o Totem.'})
 
-    vinculo = conn.execute('SELECT 1 FROM usuario_unidades WHERE usuario_id = ? AND unidade_id = ?', (user['id'], unidade_id)).fetchone()
-    unid = conn.execute('SELECT descricao FROM unidades WHERE id = ? AND ativo = 1', (unidade_id,)).fetchone()
-    conn.close()
+    perms = json.loads(user['permissoes'] or '[]')
+    eh_multi = 'multiempresa' in perms
 
-    if not vinculo or not unid:
-        return jsonify({'status': 'erro', 'mensagem': 'Este usuário não possui acesso à unidade selecionada.'})
+    unid = conn.execute('SELECT descricao FROM unidades WHERE id = ? AND ativo = 1', (unidade_id,)).fetchone()
+    if not unid:
+        conn.close()
+        return jsonify({'status': 'erro', 'mensagem': 'Unidade inválida ou inativa.'})
+
+    if not eh_multi:
+        vinculo = conn.execute('SELECT 1 FROM usuario_unidades WHERE usuario_id = ? AND unidade_id = ?', (user['id'], unidade_id)).fetchone()
+        if not vinculo:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Este usuário não possui acesso à unidade selecionada.'})
+
+    conn.close()
 
     session['totem_unidade_id'] = unidade_id
     session['totem_unidade_nome'] = unid['descricao']
@@ -1283,12 +1440,47 @@ def totem_cardapio_atual():
         'refeicao': dict(refeicao) if refeicao else None
     })
 
+def validar_refeicao_colaborador_no_horario(conn, uid, colab):
+    """
+    Verifica qual refeição está aberta no horário atual para o grupo do colaborador
+    e garante que ele realize apenas 1 entrada em cada refeição por dia.
+    """
+    agora = datetime.now()
+    hora_atual = agora.strftime('%H:%M')
+    data_hoje = agora.strftime('%Y-%m-%d')
+
+    refeicoes_horario = conn.execute('''
+        SELECT r.* FROM refeicoes r
+        JOIN refeicao_grupos rg ON rg.refeicao_id = r.id
+        JOIN grupos g ON g.id = rg.grupo_id
+        WHERE r.unidade_id = ? AND r.ativo = 1 AND g.ativo = 1
+        AND rg.grupo_id = ? AND r.hora_inicio <= ? AND r.hora_fim >= ?
+        ORDER BY r.hora_inicio ASC
+    ''', (uid, colab['grupo_id'], hora_atual, hora_atual)).fetchall()
+
+    if not refeicoes_horario:
+        return None, f"Olá, {colab['nome']}! Não há refeição liberada para o seu grupo neste horário ({hora_atual})."
+
+    # Verifica se já realizou entrada na refeição vigente hoje
+    ultimo_registro_msg = None
+    for ref in refeicoes_horario:
+        ja_registrou = conn.execute('''
+            SELECT hora_registro FROM registros_refeicao
+            WHERE colaborador_id = ? AND refeicao_id = ? AND data_registro = ?
+        ''', (colab['id'], ref['id'], data_hoje)).fetchone()
+
+        if not ja_registrou:
+            return ref, None
+        else:
+            ultimo_registro_msg = (
+                f"{colab['nome']}, sua entrada para '{ref['descricao']}' já foi registrada hoje às "
+                f"{ja_registrou['hora_registro'][:5]}. É permitida apenas 1 entrada por refeição no dia."
+            )
+
+    return None, ultimo_registro_msg
+
 @app.route('/api/totem/reconhecer-frame', methods=['POST'])
 def totem_reconhecer_frame():
-    """
-    Recebe um frame da câmera do Totem, corrige a iluminação (CLAHE),
-    alinha o rosto com YuNet e compara com os vetores SFace da unidade.
-    """
     uid = session.get('totem_unidade_id')
     if not uid:
         return jsonify({'status': 'sem_unidade'})
@@ -1302,7 +1494,6 @@ def totem_reconhecer_frame():
     if vetor is None or bbox is None:
         return jsonify({'status': 'sem_rosto'})
 
-    # Se o rosto ocupar menos de 4.5% do quadro, pede para aproximar
     if proporcao < 0.045:
         return jsonify({'status': 'longe', 'bbox': bbox})
 
@@ -1334,41 +1525,15 @@ def totem_reconhecer_frame():
             'score': round(melhor_score, 2)
         })
 
-    # Encontrou colaborador com confiança acima do limiar! Verifica liberação da refeição:
-    agora = datetime.now()
-    hora_atual = agora.strftime('%H:%M')
-    data_hoje = agora.strftime('%Y-%m-%d')
-
-    refeicao = conn.execute('''
-        SELECT r.* FROM refeicoes r
-        JOIN refeicao_grupos rg ON rg.refeicao_id = r.id
-        JOIN grupos g ON g.id = rg.grupo_id
-        WHERE r.unidade_id = ? AND r.ativo = 1 AND g.ativo = 1
-        AND rg.grupo_id = ? AND r.hora_inicio <= ? AND r.hora_fim >= ?
-        LIMIT 1
-    ''', (uid, melhor_colab['grupo_id'], hora_atual, hora_atual)).fetchone()
-
-    if not refeicao:
-        conn.close()
-        return jsonify({
-            'status': 'bloqueado',
-            'bbox': bbox,
-            'nome': melhor_colab['nome'],
-            'mensagem': f"Olá, {melhor_colab['nome']}! Não há refeição liberada para o seu grupo neste horário ({hora_atual})."
-        })
-
-    ja_registrou = conn.execute('''
-        SELECT hora_registro FROM registros_refeicao
-        WHERE colaborador_id = ? AND refeicao_id = ? AND data_registro = ?
-    ''', (melhor_colab['id'], refeicao['id'], data_hoje)).fetchone()
+    refeicao, erro_msg = validar_refeicao_colaborador_no_horario(conn, uid, melhor_colab)
     conn.close()
 
-    if ja_registrou:
+    if not refeicao:
         return jsonify({
             'status': 'bloqueado',
             'bbox': bbox,
             'nome': melhor_colab['nome'],
-            'mensagem': f"{melhor_colab['nome']}, sua entrada para '{refeicao['descricao']}' já foi registrada hoje às {ja_registrou['hora_registro'][:5]}."
+            'mensagem': erro_msg
         })
 
     return jsonify({
@@ -1413,24 +1578,11 @@ def totem_identificar():
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': f"O cadastro de {colab['nome']} está inativo."})
 
-    agora = datetime.now()
-    hora_atual = agora.strftime('%H:%M')
-    data_hoje = agora.strftime('%Y-%m-%d')
-
-    refeicao = conn.execute('''
-        SELECT r.* FROM refeicoes r JOIN refeicao_grupos rg ON rg.refeicao_id = r.id JOIN grupos g ON g.id = rg.grupo_id
-        WHERE r.unidade_id = ? AND r.ativo = 1 AND g.ativo = 1 AND rg.grupo_id = ? AND r.hora_inicio <= ? AND r.hora_fim >= ? LIMIT 1
-    ''', (uid, colab['grupo_id'], hora_atual, hora_atual)).fetchone()
-
-    if not refeicao:
-        conn.close()
-        return jsonify({'status': 'erro', 'mensagem': f"Olá, {colab['nome']}! Não há refeição liberada para o seu grupo neste horário."})
-
-    ja_registrou = conn.execute('SELECT hora_registro FROM registros_refeicao WHERE colaborador_id = ? AND refeicao_id = ? AND data_registro = ?', (colab['id'], refeicao['id'], data_hoje)).fetchone()
+    refeicao, erro_msg = validar_refeicao_colaborador_no_horario(conn, uid, colab)
     conn.close()
 
-    if ja_registrou:
-        return jsonify({'status': 'erro', 'mensagem': f"{colab['nome']}, sua entrada para '{refeicao['descricao']}' já foi registrada hoje às {ja_registrou['hora_registro'][:5]}."})
+    if not refeicao:
+        return jsonify({'status': 'erro', 'mensagem': erro_msg})
 
     return jsonify({
         'status': 'sucesso',
@@ -1445,6 +1597,9 @@ def totem_identificar():
 @app.route('/api/totem/confirmar-entrada', methods=['POST'])
 def totem_confirmar_entrada():
     uid = session.get('totem_unidade_id')
+    if not uid:
+        return jsonify({'status': 'erro', 'mensagem': 'Unidade não autenticada no Totem.'})
+
     colaborador_id = request.form.get('colaborador_id', type=int)
     refeicao_id = request.form.get('refeicao_id', type=int)
     metodo = request.form.get('metodo', 'CPF')
@@ -1452,27 +1607,48 @@ def totem_confirmar_entrada():
 
     agora = datetime.now()
     data_hoje = agora.strftime('%Y-%m-%d')
+    hora_atual = agora.strftime('%H:%M')
     hora_agora = agora.strftime('%H:%M:%S')
 
     conn = get_db()
-    colab = conn.execute('SELECT nome, cpf FROM colaboradores WHERE id = ? AND unidade_id = ? AND ativo = 1', (colaborador_id, uid)).fetchone()
-    ref = conn.execute('SELECT descricao, custo FROM refeicoes WHERE id = ? AND unidade_id = ? AND ativo = 1', (refeicao_id, uid)).fetchone()
+    colab = conn.execute('SELECT id, nome, cpf, grupo_id FROM colaboradores WHERE id = ? AND unidade_id = ? AND ativo = 1', (colaborador_id, uid)).fetchone()
+    ref = conn.execute('''
+        SELECT r.id, r.descricao, r.custo
+        FROM refeicoes r
+        JOIN refeicao_grupos rg ON rg.refeicao_id = r.id
+        JOIN grupos g ON g.id = rg.grupo_id
+        WHERE r.id = ? AND r.unidade_id = ? AND r.ativo = 1 AND g.ativo = 1
+        AND rg.grupo_id = ? AND r.hora_inicio <= ? AND r.hora_fim >= ?
+    ''', (refeicao_id, uid, colab['grupo_id'] if colab else -1, hora_atual, hora_atual)).fetchone()
 
     if not colab or not ref:
         conn.close()
-        return jsonify({'status': 'erro', 'mensagem': 'Dados inválidos.'})
+        return jsonify({'status': 'erro', 'mensagem': 'Horário da refeição encerrado ou dados inválidos.'})
 
-    duplicado = conn.execute('SELECT 1 FROM registros_refeicao WHERE colaborador_id = ? AND refeicao_id = ? AND data_registro = ?', (colaborador_id, refeicao_id, data_hoje)).fetchone()
-    if duplicado:
+    ja_registrou = conn.execute('''
+        SELECT hora_registro FROM registros_refeicao
+        WHERE colaborador_id = ? AND refeicao_id = ? AND data_registro = ?
+    ''', (colaborador_id, refeicao_id, data_hoje)).fetchone()
+
+    if ja_registrou:
         conn.close()
-        return jsonify({'status': 'erro', 'mensagem': 'Refeição já registrada hoje.'})
+        return jsonify({
+            'status': 'erro',
+            'mensagem': f"{colab['nome']}, você já registrou entrada para '{ref['descricao']}' hoje às {ja_registrou['hora_registro'][:5]}. Só é permitida 1 entrada por refeição no dia."
+        })
 
-    conn.execute('INSERT INTO registros_refeicao (colaborador_id, refeicao_id, unidade_id, data_registro, hora_registro, custo_registrado, metodo) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                 (colaborador_id, refeicao_id, uid, data_hoje, hora_agora, ref['custo'], metodo))
-    conn.commit()
+    try:
+        conn.execute('''
+            INSERT INTO registros_refeicao (colaborador_id, refeicao_id, unidade_id, data_registro, hora_registro, custo_registrado, metodo)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (colaborador_id, refeicao_id, uid, data_hoje, hora_agora, ref['custo'], metodo))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'status': 'erro', 'mensagem': 'Entrada já registrada para esta refeição hoje.'})
+
     conn.close()
 
-    # APRENDIZADO CONTÍNUO: atualiza o perfil facial do colaborador com o frame confirmado
     if frame_b64:
         img_bgr = decodificar_base64_para_bgr(frame_b64)
         vetor_novo, _, proporcao = analisar_rosto_bgr(img_bgr)
@@ -1480,7 +1656,7 @@ def totem_confirmar_entrada():
             adicionar_vetor_aprendizado_continuo(colaborador_id, vetor_novo)
 
     registrar_log('registros_refeicao', 'INCLUSÃO', f"Entrada confirmada: '{colab['nome']}' - '{ref['descricao']}' via {metodo}.", uid)
-    return jsonify({'status': 'sucesso', 'mensagem': f"Bom apetite, {colab['nome']}! Entrada registrada com sucesso."})
+    return jsonify({'status': 'sucesso', 'mensagem': f"Bom apetite, {colab['nome']}! Entrada em '{ref['descricao']}' registrada com sucesso."})
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5055, debug=False)
