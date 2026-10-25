@@ -353,11 +353,11 @@
     </div>
     {% endif %}
 
-    <!-- ABA: COLABORADORES -->
+    <!-- ABA: COLABORADORES (COM CAPTURA EM RAJADA DE 5 FOTOS) -->
     {% if aba == 'colaboradores' and 'cad_colaborador' in perms %}
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="bg-white p-6 rounded-xl shadow">
-            <h2 class="text-lg font-bold mb-4">Cadastrar Colaborador</h2>
+            <h2 class="text-lg font-bold mb-4" id="tituloFormColab">Cadastrar Colaborador</h2>
             <form id="formColaborador" class="space-y-3">
                 <input type="hidden" name="id" id="col_id">
                 <div>
@@ -383,33 +383,49 @@
                         <option value="0">Não</option>
                     </select>
                 </div>
-                
-                <!-- WEBCAM COM MÁSCARA GUIA -->
+
+                <!-- CAPTURA EM RAJADA PELA WEBCAM -->
                 <div>
-                    <label class="text-xs font-semibold uppercase text-gray-600">Foto para Reconhecimento Facial</label>
+                    <label class="text-xs font-semibold uppercase text-gray-600">Biometria Facial (Captura em Rajada)</label>
                     <div class="mt-1 border rounded-xl p-3 bg-gray-50 text-center">
                         <div class="relative mx-auto max-w-[280px]">
-                            <!-- O canvas ficará oculto até a captura -->
                             <video id="videoColab" autoplay muted playsinline class="w-full h-56 bg-gray-900 rounded-lg object-cover hidden"></video>
-                            
-                            <!-- Máscara tracejada que fica por cima do vídeo para guiar o enquadramento -->
-                            <div id="guiaCamera" class="hidden absolute inset-0 pointer-events-none flex items-center justify-center">
-                                <div class="w-32 h-40 border-2 border-dashed border-white/70 rounded-[2rem]"></div>
-                                <span class="absolute bottom-2 text-[10px] text-white/80 bg-black/40 px-2 rounded">Enquadre o rosto aqui</span>
+
+                            <div id="guiaCamera" class="hidden absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                                <div class="w-36 h-44 border-2 border-dashed border-emerald-400 rounded-[2rem]"></div>
+                                <span id="instrucaoRajada" class="mt-1 text-[11px] font-bold text-white bg-black/60 px-2.5 py-0.5 rounded-full">
+                                    Enquadre o rosto no guia
+                                </span>
                             </div>
 
                             <img id="previewColab" class="w-full h-56 bg-gray-200 rounded-lg object-cover hidden shadow-sm border border-gray-300">
                         </div>
-                        
-                        <canvas id="canvasColab" class="hidden"></canvas>
-                        <input type="hidden" name="foto_b64" id="col_foto_b64">
-                        
-                        <div class="flex flex-wrap gap-2 justify-center mt-3">
-                            <button type="button" id="btnAtivarCam" onclick="ativarCameraColab()" class="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-bold hover:bg-blue-200 transition"><i class="fa-solid fa-camera mr-1"></i> Ligar Câmera</button>
-                            <button type="button" id="btnCapturar" onclick="capturarFotoColab()" class="hidden px-4 py-2 btn-tema rounded-lg text-sm font-bold shadow"><i class="fa-solid fa-camera-retro mr-1"></i> Tirar Foto</button>
-                            <button type="button" id="btnLimparFoto" onclick="limparFotoColab()" class="hidden px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-300 transition"><i class="fa-solid fa-trash mr-1"></i> Descartar</button>
+
+                        <!-- Barra de progresso da rajada -->
+                        <div id="barraProgressoBox" class="hidden w-full bg-gray-200 h-2.5 rounded-full overflow-hidden mt-2">
+                            <div id="barraProgressoFill" class="bg-emerald-600 h-full w-0 transition-all duration-300"></div>
                         </div>
-                        <p class="text-[10px] text-gray-500 mt-2">O rosto deve preencher quase todo o quadrado guia.</p>
+
+                        <!-- Miniaturas das 5 capturas da rajada -->
+                        <div id="miniaturasRajada" class="flex justify-center gap-1.5 mt-2"></div>
+
+                        <canvas id="canvasColab" class="hidden"></canvas>
+                        <input type="hidden" name="fotos_burst_json" id="col_fotos_burst">
+
+                        <div class="flex flex-wrap gap-2 justify-center mt-3">
+                            <button type="button" id="btnAtivarCam" onclick="ativarCameraColab()" class="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-bold hover:bg-blue-200 transition">
+                                <i class="fa-solid fa-camera mr-1"></i> Ligar Câmera
+                            </button>
+                            <button type="button" id="btnCapturar" onclick="iniciarCapturaRajada()" class="hidden px-4 py-2 btn-tema rounded-lg text-sm font-bold shadow">
+                                <i class="fa-solid fa-bolt mr-1"></i> Capturar Rajada (5 Fotos)
+                            </button>
+                            <button type="button" id="btnLimparFoto" onclick="limparFotoColab()" class="hidden px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-300 transition">
+                                <i class="fa-solid fa-rotate-left mr-1"></i> Refazer
+                            </button>
+                        </div>
+                        <p class="text-[11px] text-gray-500 mt-2">
+                            A rajada tira 5 fotos em 2 segundos e aplica correção automática de iluminação (CLAHE).
+                        </p>
                     </div>
                 </div>
 
@@ -428,6 +444,7 @@
                         <th class="p-3">Foto</th>
                         <th class="p-3">Nome / CPF</th>
                         <th class="p-3">Grupo</th>
+                        <th class="p-3">Biometria IA</th>
                         <th class="p-3">Ativo</th>
                         <th class="p-3 text-right">Ação</th>
                     </tr>
@@ -447,6 +464,17 @@
                             <div class="text-xs text-gray-500">{{ c.cpf }}</div>
                         </td>
                         <td class="p-3">{{ c.grupo_nome }}</td>
+                        <td class="p-3">
+                            {% if c.qtd_vetores > 0 %}
+                                <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
+                                    <i class="fa-solid fa-face-smile mr-1"></i>{{ c.qtd_vetores }} amostras
+                                </span>
+                            {% else %}
+                                <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+                                    Sem biometria
+                                </span>
+                            {% endif %}
+                        </td>
                         <td class="p-3">{{ 'Sim' if c.ativo == 1 else 'Não' }}</td>
                         <td class="p-3 text-right">
                             <button type="button"
@@ -457,7 +485,7 @@
                                 data-ativo="{{ c.ativo }}"
                                 data-foto="{{ c.foto_path or '' }}"
                                 onclick="editarColaborador(this)"
-                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar / Trocar Foto</button>
+                                class="px-3 py-1 bg-blue-50 text-blue-700 rounded text-xs font-semibold">Editar / Recapturar</button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -789,6 +817,9 @@
         }
     });
 
+    // =========================================================================
+    // CAPTURA EM RAJADA (5 FOTOS EM 2 SEGUNDOS) PARA BIOMETRIA DO COLABORADOR
+    // =========================================================================
     let streamColab = null;
 
     async function ativarCameraColab() {
@@ -796,11 +827,11 @@
             streamColab = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
             const video = document.getElementById('videoColab');
             video.srcObject = streamColab;
-            
-            // Mostra o vídeo e a máscara pontilhada
+
             video.classList.remove('hidden');
             document.getElementById('guiaCamera').classList.remove('hidden');
             document.getElementById('previewColab').classList.add('hidden');
+            document.getElementById('miniaturasRajada').innerHTML = '';
 
             document.getElementById('btnAtivarCam').classList.add('hidden');
             document.getElementById('btnCapturar').classList.remove('hidden');
@@ -810,38 +841,76 @@
         }
     }
 
-    function capturarFotoColab() {
+    function iniciarCapturaRajada() {
         const video = document.getElementById('videoColab');
         const canvas = document.getElementById('canvasColab');
         const preview = document.getElementById('previewColab');
-        const b64Input = document.getElementById('col_foto_b64');
+        const burstInput = document.getElementById('col_fotos_burst');
+        const instrucao = document.getElementById('instrucaoRajada');
+        const barraBox = document.getElementById('barraProgressoBox');
+        const barraFill = document.getElementById('barraProgressoFill');
+        const miniaturas = document.getElementById('miniaturasRajada');
 
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
+        const totalFotos = 5;
+        const fotosCapturadas = [];
+        let contador = 0;
 
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        b64Input.value = dataUrl;
-        preview.src = dataUrl;
-
-        // Oculta vídeo e máscara, mostra a foto
-        video.classList.add('hidden');
-        document.getElementById('guiaCamera').classList.add('hidden');
-        preview.classList.remove('hidden');
-        
         document.getElementById('btnCapturar').classList.add('hidden');
-        document.getElementById('btnLimparFoto').innerText = 'Descartar e Tentar Novamente';
+        barraBox.classList.remove('hidden');
+        barraFill.style.width = '0%';
+        miniaturas.innerHTML = '';
 
-        if (streamColab) {
-            streamColab.getTracks().forEach(track => track.stop());
-            streamColab = null;
-        }
+        const orientacoes = [
+            'Foto 1/5: Olhe para frente...',
+            'Foto 2/5: Incline levemente à esquerda...',
+            'Foto 3/5: Incline levemente à direita...',
+            'Foto 4/5: Queixo levemente erguido...',
+            'Foto 5/5: Sorria ou expressão neutra!'
+        ];
+
+        const intervalo = setInterval(() => {
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            fotosCapturadas.push(dataUrl);
+
+            // Cria miniatura da foto capturada
+            const thumb = document.createElement('img');
+            thumb.src = dataUrl;
+            thumb.className = 'w-10 h-10 rounded object-cover border-2 border-emerald-500 shadow-sm';
+            miniaturas.appendChild(thumb);
+
+            contador++;
+            barraFill.style.width = `${(contador / totalFotos) * 100}%`;
+            if (contador < totalFotos) {
+                instrucao.innerText = orientacoes[contador];
+            }
+
+            if (contador >= totalFotos) {
+                clearInterval(intervalo);
+                burstInput.value = JSON.stringify(fotosCapturadas);
+                preview.src = fotosCapturadas[0];
+
+                video.classList.add('hidden');
+                document.getElementById('guiaCamera').classList.add('hidden');
+                preview.classList.remove('hidden');
+
+                if (streamColab) {
+                    streamColab.getTracks().forEach(track => track.stop());
+                    streamColab = null;
+                }
+            }
+        }, 450);
     }
 
     function limparFotoColab() {
-        document.getElementById('col_foto_b64').value = '';
+        document.getElementById('col_fotos_burst').value = '';
         document.getElementById('previewColab').src = '';
         document.getElementById('previewColab').classList.add('hidden');
+        document.getElementById('miniaturasRajada').innerHTML = '';
+        document.getElementById('barraProgressoBox').classList.add('hidden');
 
         if (streamColab) {
             streamColab.getTracks().forEach(track => track.stop());
@@ -858,11 +927,13 @@
     function limparFormColaborador() {
         document.getElementById('formColaborador').reset();
         document.getElementById('col_id').value = '';
+        document.getElementById('tituloFormColab').innerText = 'Cadastrar Colaborador';
         limparFotoColab();
     }
 
     function editarColaborador(btn) {
         const d = btn.dataset;
+        document.getElementById('tituloFormColab').innerText = 'Editar Colaborador #' + d.id;
         document.getElementById('col_id').value = d.id;
         document.getElementById('col_nome').value = d.nome;
         document.getElementById('col_cpf').value = d.cpf;
@@ -870,18 +941,15 @@
         document.getElementById('col_ativo').value = d.ativo;
 
         limparFotoColab();
-        
+
         if (d.foto) {
             document.getElementById('previewColab').src = '/static/' + d.foto;
             document.getElementById('previewColab').classList.remove('hidden');
-            document.getElementById('btnLimparFoto').classList.remove('hidden');
-            document.getElementById('btnLimparFoto').innerText = 'Remover Foto';
             document.getElementById('btnAtivarCam').classList.remove('hidden');
-            document.getElementById('btnAtivarCam').innerHTML = '<i class="fa-solid fa-camera mr-1"></i> Refazer Foto';
+            document.getElementById('btnAtivarCam').innerHTML = '<i class="fa-solid fa-bolt mr-1"></i> Refazer Rajada (5 Fotos)';
         }
     }
 
-    // Demais funções CRUD
     function editarUsuario(btn) {
         const d = btn.dataset;
         const unidadesIds = JSON.parse(d.unidades || '[]');

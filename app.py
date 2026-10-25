@@ -4,8 +4,12 @@ import json
 import uuid
 import sqlite3
 import base64
+import threading
+import urllib.request
 from datetime import datetime
 from functools import wraps
+import numpy as np
+import cv2
 from flask import (
     Flask, render_template, request, redirect, url_for,
     session, jsonify, send_file
@@ -19,16 +23,32 @@ app.secret_key = os.environ.get('SECRET_KEY', '9f8d7a6b5c4e3f2a1b0c9d8e7f6a5b4c3
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25MB para suportar envio de rajada de fotos
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'refeitorio.db')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
+MODELS_FOLDER = os.path.join(BASE_DIR, 'models')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(MODELS_FOLDER, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 
-# Temas com nomes simplificados
+# Modelos ONNX oficiais (YuNet Detector + SFace Hypersphere Recognizer)
+YUNET_PATH = os.path.join(MODELS_FOLDER, 'face_detection_yunet_2023mar.onnx')
+SFACE_PATH = os.path.join(MODELS_FOLDER, 'face_recognition_sface_2021dec.onnx')
+
+YUNET_URL = 'https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx'
+SFACE_URL = 'https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx'
+
+# Limiar de similaridade de cosseno (0.38 oferece alta precisão e tolerância a óculos/barba/iluminação)
+LIMIAR_SIMILARIDADE = 0.38
+MAX_VETORES_POR_COLABORADOR = 15
+
+FACIAL_LOCK = threading.Lock()
+_detector_yn = None
+_recognizer_sf = None
+
 TEMAS = {
     'tema_1': {'nome': 'Azul', 'primaria': '#1e3a8a', 'secundaria': '#2563eb', 'fundo': '#f8fafc', 'texto': '#0f172a'},
     'tema_2': {'nome': 'Verde', 'primaria': '#065f46', 'secundaria': '#10b981', 'fundo': '#f0fdf4', 'texto': '#064e3b'},
@@ -54,6 +74,187 @@ def limpar_cpf_cnpj(valor):
 def arquivo_permitido(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# ==============================================================================
+# MOTOR DE INTELIGÊNCIA ARTIFICIAL FACIAL (YUNET + SFACE + CLAHE)
+# ==============================================================================
+def baixar_modelo_se_necessario(url, destino, tamanho_minimo_bytes):
+    if os.path.exists(destino) and os.path.getsize(destino) >= tamanho_minimo_bytes:
+        return True
+    tmp_path = f"{destino}.{uuid.uuid4().hex}.tmp"
+    try:
+        print(f"Baixando modelo facial: {os.path.basename(destino)}...")
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=120) as response, open(tmp_path, 'wb') as out_file:
+            out_file.write(response.read())
+        if os.path.getsize(tmp_path) >= tamanho_minimo_bytes:
+            os.replace(tmp_path, destino)
+            print(f"Modelo {os.path.basename(destino)} pronto.")
+            return True
+    except Exception as e:
+        print(f"Erro ao baixar modelo {destino}: {e}")
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+    return False
+
+def obter_motores_faciais():
+    global _detector_yn, _recognizer_sf
+    if _detector_yn is not None and _recognizer_sf is not None:
+        return _detector_yn, _recognizer_sf
+
+    ok1 = baixar_modelo_se_necessario(YUNET_URL, YUNET_PATH, 100_000)
+    ok2 = baixar_modelo_se_necessario(SFACE_URL, SFACE_PATH, 10_000_000)
+    if not (ok1 and ok2):
+        return None, None
+
+    _detector_yn = cv2.FaceDetectorYN.create(
+        YUNET_PATH, "", (320, 320),
+        score_threshold=0.6, nms_threshold=0.3, top_k=5000
+    )
+    _recognizer_sf = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
+    return _detector_yn, _recognizer_sf
+
+def corrigir_iluminacao_clahe(img_bgr):
+    """
+    Aplica equalização adaptativa de histograma (CLAHE) no canal de luminância (LAB)
+    para corrigir sombras no rosto, contraluz ou iluminação forte sem distorcer as cores.
+    """
+    try:
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l)
+        lab_eq = cv2.merge((l_eq, a, b))
+        return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+    except Exception:
+        return img_bgr
+
+def decodificar_base64_para_bgr(b64_str):
+    if not b64_str or ',' not in b64_str:
+        return None
+    try:
+        _, encoded = b64_str.split(',', 1)
+        dados = base64.b64decode(encoded)
+        arr = np.frombuffer(dados, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return img
+    except Exception:
+        return None
+
+def analisar_rosto_bgr(img_bgr):
+    """
+    Recebe uma imagem BGR, aplica correção automática de luz (CLAHE),
+    detecta o maior rosto na imagem, alinha os 5 pontos faciais (112x112)
+    e retorna (vetor_normalizado_128d, bbox_relativo, proporcao_area).
+    """
+    if img_bgr is None or img_bgr.size == 0:
+        return None, None, 0.0
+
+    with FACIAL_LOCK:
+        detector, recognizer = obter_motores_faciais()
+        if detector is None or recognizer is None:
+            return None, None, 0.0
+
+        img_corrigida = corrigir_iluminacao_clahe(img_bgr)
+        h, w = img_corrigida.shape[:2]
+
+        # Redimensiona se a imagem for muito grande para acelerar a detecção
+        escala = 1.0
+        largura_max = 640
+        if w > largura_max:
+            escala = largura_max / float(w)
+            nova_w = int(w * escala)
+            nova_h = int(h * escala)
+            img_proc = cv2.resize(img_corrigida, (nova_w, nova_h))
+        else:
+            img_proc = img_corrigida
+            nova_w, nova_h = w, h
+
+        detector.setInputSize((nova_w, nova_h))
+        _, faces = detector.detect(img_proc)
+
+        if faces is None or len(faces) == 0:
+            return None, None, 0.0
+
+        # Seleciona o maior rosto (mais próximo da câmera)
+        maior_face = max(faces, key=lambda f: f[2] * f[3])
+        fx, fy, fw, fh = [float(v) for v in maior_face[:4]]
+
+        # Calcula proporção do rosto em relação à tela toda
+        proporcao = (fw * fh) / float(nova_w * nova_h)
+        bbox_rel = {
+            'x': max(0.0, fx / nova_w),
+            'y': max(0.0, fy / nova_h),
+            'w': min(1.0, fw / nova_w),
+            'h': min(1.0, fh / nova_h)
+        }
+
+        # Alinhamento geométrico de 5 pontos (olhos, nariz e boca) para 112x112
+        rosto_alinhado = recognizer.alignCrop(img_proc, maior_face)
+        feat = recognizer.feature(rosto_alinhado)
+        vetor = feat.flatten().astype(np.float32)
+        norma = np.linalg.norm(vetor)
+        if norma > 0:
+            vetor = vetor / norma
+
+        return vetor.tolist(), bbox_rel, proporcao
+
+def comparar_vetor_com_lista(vetor_consulta, lista_vetores):
+    if not vetor_consulta or not lista_vetores:
+        return 0.0
+    v_query = np.array(vetor_consulta, dtype=np.float32)
+    melhor_score = 0.0
+    for v_salvo in lista_vetores:
+        v_db = np.array(v_salvo, dtype=np.float32)
+        if v_db.shape == v_query.shape:
+            score = float(np.dot(v_query, v_db))
+            if score > melhor_score:
+                melhor_score = score
+    return melhor_score
+
+def adicionar_vetor_aprendizado_continuo(colaborador_id, novo_vetor):
+    """
+    Aprendizado Contínuo: adiciona a nova aparência do colaborador ao banco,
+    preservando sempre os 5 vetores originais da rajada de cadastro e
+    rotacionando até 10 vetores aprendidos no dia a dia.
+    """
+    if not novo_vetor:
+        return
+    try:
+        conn = get_db()
+        row = conn.execute('SELECT face_embeddings FROM colaboradores WHERE id = ?', (colaborador_id,)).fetchone()
+        if not row:
+            conn.close()
+            return
+        atuais = json.loads(row['face_embeddings'] or '[]')
+
+        # Se já tiver um vetor quase idêntico (> 0.82), não precisa duplicar
+        melhor_atual = comparar_vetor_com_lista(novo_vetor, atuais)
+        if melhor_atual > 0.82 and len(atuais) >= 3:
+            conn.close()
+            return
+
+        if len(atuais) < MAX_VETORES_POR_COLABORADOR:
+            atuais.append(novo_vetor)
+        else:
+            # Mantém os 5 primeiros (cadastro inicial) e atualiza a janela dos últimos 10
+            originais = atuais[:5]
+            aprendidos = atuais[5:]
+            aprendidos.append(novo_vetor)
+            atuais = originais + aprendidos[-(MAX_VETORES_POR_COLABORADOR - 5):]
+
+        conn.execute('UPDATE colaboradores SET face_embeddings = ? WHERE id = ?', (json.dumps(atuais), colaborador_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Erro no aprendizado contínuo: {e}")
+
+# ==============================================================================
+# SEGURANÇA E INICIALIZAÇÃO DO BANCO DE DADOS
+# ==============================================================================
 @app.after_request
 def aplicar_cabecalhos_seguranca(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -170,6 +371,7 @@ def init_db():
             nome TEXT NOT NULL,
             cpf TEXT NOT NULL,
             foto_path TEXT,
+            face_embeddings TEXT DEFAULT '[]',
             grupo_id INTEGER NOT NULL,
             ativo INTEGER DEFAULT 1,
             unidade_id INTEGER NOT NULL,
@@ -178,6 +380,11 @@ def init_db():
             FOREIGN KEY (unidade_id) REFERENCES unidades(id)
         )
     ''')
+
+    # Migração automática caso a tabela colaboradores já exista sem a coluna face_embeddings
+    colunas_colab = [col['name'] for col in c.execute("PRAGMA table_info(colaboradores)").fetchall()]
+    if 'face_embeddings' not in colunas_colab:
+        c.execute("ALTER TABLE colaboradores ADD COLUMN face_embeddings TEXT DEFAULT '[]'")
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS cardapios (
@@ -248,9 +455,23 @@ def init_db():
         c.execute('INSERT INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (usuario_id, unidade_id))
 
     conn.commit()
+
+    # Migra fotos antigas já cadastradas que ainda não possuam vetor facial extraído
+    colabs_sem_vetor = c.execute(
+        "SELECT id, foto_path FROM colaboradores WHERE foto_path != '' AND (face_embeddings IS NULL OR face_embeddings = '[]')"
+    ).fetchall()
+    for col in colabs_sem_vetor:
+        caminho_img = os.path.join(BASE_DIR, 'static', col['foto_path'])
+        if os.path.exists(caminho_img):
+            img_bgr = cv2.imread(caminho_img)
+            vetor, _, _ = analisar_rosto_bgr(img_bgr)
+            if vetor:
+                c.execute("UPDATE colaboradores SET face_embeddings = ? WHERE id = ?", (json.dumps([vetor]), col['id']))
+    conn.commit()
     conn.close()
 
 init_db()
+obter_motores_faciais()
 
 def login_obrigatorio(f):
     @wraps(f)
@@ -297,6 +518,9 @@ def injetar_globais():
         'csrf_token': session.get('csrf_token', '')
     }
 
+# ==============================================================================
+# ROTAS DE LOGIN E REDEFINIÇÃO DE SENHA
+# ==============================================================================
 @app.route('/')
 def index():
     if 'usuario_id' in session:
@@ -355,7 +579,6 @@ def trocar_senha():
     return render_template('trocar_senha.html')
 
 @app.route('/api/trocar-senha', methods=['POST'])
-@app.route('/api/trocar-senha', methods=['POST'])
 @login_obrigatorio
 def api_trocar_senha():
     nova_senha = request.form.get('nova_senha', '')
@@ -364,7 +587,7 @@ def api_trocar_senha():
     if nova_senha != confirmar:
         return jsonify({'status': 'erro', 'mensagem': 'A confirmação de senha não confere.'})
 
-    # NOVA REGRA: Mínimo de 8 caracteres, contendo letras, números e símbolos (qualquer caractere que não seja letra ou número)
+    # Regra: Mínimo de 8 caracteres, com letras, números e símbolos
     if len(nova_senha) < 8 or not re.search(r'[A-Za-z]', nova_senha) or not re.search(r'\d', nova_senha) or not re.search(r'[^A-Za-z0-9]', nova_senha):
         return jsonify({'status': 'erro', 'mensagem': 'A nova senha deve conter no mínimo 8 caracteres, incluindo letras, números e símbolos.'})
 
@@ -386,6 +609,9 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
+# ==============================================================================
+# MÓDULO 1: PAINEL ADMINISTRATIVO
+# ==============================================================================
 @app.route('/admin')
 @login_obrigatorio
 def admin_painel():
@@ -412,13 +638,20 @@ def admin_painel():
         mapa_ref_grupos.setdefault(v['refeicao_id'], []).append({'id': v['grupo_id'], 'nome': v['grupo_nome']})
         mapa_grupo_refs.setdefault(v['grupo_id'], []).append({'id': v['refeicao_id'], 'nome': v['refeicao_nome']})
 
-    colaboradores = conn.execute('''
+    colaboradores_db = conn.execute('''
         SELECT c.*, g.descricao as grupo_nome
         FROM colaboradores c
         LEFT JOIN grupos g ON g.id = c.grupo_id
         WHERE c.unidade_id = ?
         ORDER BY c.nome
     ''', (uid,)).fetchall()
+
+    colaboradores = []
+    for c in colaboradores_db:
+        qtd_vetores = len(json.loads(c['face_embeddings'] or '[]'))
+        d_col = dict(c)
+        d_col['qtd_vetores'] = qtd_vetores
+        colaboradores.append(d_col)
 
     cardapios = conn.execute('''
         SELECT * FROM cardapios
@@ -623,6 +856,7 @@ def salvar_refeicao():
     conn.close()
     return jsonify({'status': 'sucesso', 'mensagem': 'Refeição salva com sucesso!'})
 
+# --- SALVAR COLABORADOR COM CAPTURA EM RAJADA + CLAHE ---
 @app.route('/api/colaborador/salvar', methods=['POST'])
 @login_obrigatorio
 @requer_permissao('cad_colaborador')
@@ -632,47 +866,77 @@ def salvar_colaborador():
     cpf = limpar_cpf_cnpj(request.form.get('cpf'))
     grupo_id = request.form.get('grupo_id', type=int)
     ativo = request.form.get('ativo', type=int, default=1)
-    foto_b64 = request.form.get('foto_b64')
+    fotos_burst_json = request.form.get('fotos_burst_json', '')
+    foto_b64_unica = request.form.get('foto_b64', '')
     uid = session['unidade_id']
 
     if not nome or len(cpf) != 11 or not grupo_id:
-        return jsonify({'status': 'erro', 'mensagem': 'Preencha Nome, CPF válido e selecione um Grupo.'})
+        return jsonify({'status': 'erro', 'mensagem': 'Preencha Nome, CPF válido (11 dígitos) e selecione um Grupo.'})
+
+    lista_b64 = []
+    if fotos_burst_json:
+        try:
+            lista_b64 = json.loads(fotos_burst_json)
+        except Exception:
+            lista_b64 = []
+    elif foto_b64_unica and foto_b64_unica.startswith('data:image'):
+        lista_b64 = [foto_b64_unica]
 
     foto_rel_path = None
+    novos_vetores = []
 
-    # Tratamento da imagem base64 vinda da webcam do navegador
-    if foto_b64 and foto_b64.startswith('data:image'):
-        try:
-            header, encoded = foto_b64.split(",", 1)
-            ext = header.split(';')[0].split('/')[1]
-            if ext not in ALLOWED_EXTENSIONS:
-                ext = 'png'
-            nome_seguro = f"colab_{uid}_{cpf}_{uuid.uuid4().hex[:8]}.{ext}"
-            caminho_completo = os.path.join(UPLOAD_FOLDER, nome_seguro)
-            with open(caminho_completo, "wb") as fh:
-                fh.write(base64.b64decode(encoded))
-            foto_rel_path = f"uploads/{nome_seguro}"
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': 'Erro ao processar e salvar a imagem da webcam.'})
+    if lista_b64:
+        for idx, b64_item in enumerate(lista_b64):
+            img_bgr = decodificar_base64_para_bgr(b64_item)
+            if img_bgr is None:
+                continue
+
+            # Salva o primeiro frame válido como foto de perfil do colaborador
+            if foto_rel_path is None:
+                nome_seguro = f"colab_{uid}_{cpf}_{uuid.uuid4().hex[:8]}.jpg"
+                caminho_completo = os.path.join(UPLOAD_FOLDER, nome_seguro)
+                cv2.imwrite(caminho_completo, img_bgr)
+                foto_rel_path = f"uploads/{nome_seguro}"
+
+            vetor, _, _ = analisar_rosto_bgr(img_bgr)
+            if vetor:
+                novos_vetores.append(vetor)
+
+        if not novos_vetores:
+            return jsonify({
+                'status': 'erro',
+                'mensagem': 'Não foi possível detectar um rosto nítido nas fotos capturadas. Aproxime o rosto da câmera e tente novamente.'
+            })
 
     conn = get_db()
     try:
         if id_col:
-            if foto_rel_path:
-                conn.execute('UPDATE colaboradores SET nome=?, cpf=?, foto_path=?, grupo_id=?, ativo=? WHERE id=? AND unidade_id=?', (nome, cpf, foto_rel_path, grupo_id, ativo, id_col, uid))
+            if foto_rel_path and novos_vetores:
+                conn.execute('''
+                    UPDATE colaboradores SET nome=?, cpf=?, foto_path=?, face_embeddings=?, grupo_id=?, ativo=?
+                    WHERE id=? AND unidade_id=?
+                ''', (nome, cpf, foto_rel_path, json.dumps(novos_vetores), grupo_id, ativo, id_col, uid))
             else:
-                conn.execute('UPDATE colaboradores SET nome=?, cpf=?, grupo_id=?, ativo=? WHERE id=? AND unidade_id=?', (nome, cpf, grupo_id, ativo, id_col, uid))
+                conn.execute('''
+                    UPDATE colaboradores SET nome=?, cpf=?, grupo_id=?, ativo=?
+                    WHERE id=? AND unidade_id=?
+                ''', (nome, cpf, grupo_id, ativo, id_col, uid))
             conn.commit()
-            registrar_log('colaboradores', 'ALTERAÇÃO', f"Alterado colaborador '{nome}' (CPF: {cpf}).")
+            registrar_log('colaboradores', 'ALTERAÇÃO', f"Alterado colaborador '{nome}' (CPF: {cpf}) - {len(novos_vetores)} ângulos faciais processados.")
         else:
-            conn.execute('INSERT INTO colaboradores (nome, cpf, foto_path, grupo_id, ativo, unidade_id) VALUES (?, ?, ?, ?, ?, ?)', (nome, cpf, foto_rel_path or '', grupo_id, ativo, uid))
+            conn.execute('''
+                INSERT INTO colaboradores (nome, cpf, foto_path, face_embeddings, grupo_id, ativo, unidade_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (nome, cpf, foto_rel_path or '', json.dumps(novos_vetores), grupo_id, ativo, uid))
             conn.commit()
-            registrar_log('colaboradores', 'INCLUSÃO', f"Cadastrado colaborador '{nome}' (CPF: {cpf}).")
+            registrar_log('colaboradores', 'INCLUSÃO', f"Cadastrado colaborador '{nome}' (CPF: {cpf}) com {len(novos_vetores)} ângulos faciais.")
     except sqlite3.IntegrityError:
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': 'Já existe um colaborador com este CPF cadastrado nesta unidade.'})
     conn.close()
-    return jsonify({'status': 'sucesso', 'mensagem': 'Colaborador salvo com sucesso!'})
+
+    msg_extra = f" ({len(novos_vetores)} amostras faciais gravadas com sucesso!)" if novos_vetores else ""
+    return jsonify({'status': 'sucesso', 'mensagem': f"Colaborador salvo com sucesso!{msg_extra}"})
 
 @app.route('/api/cardapio/salvar', methods=['POST'])
 @login_obrigatorio
@@ -756,7 +1020,7 @@ def salvar_configuracoes():
         conn.execute('INSERT INTO configuracoes (unidade_id, tema, logo_path) VALUES (?, ?, ?)', (uid, tema, logo_rel_path or ''))
     conn.commit()
     conn.close()
-    registrar_log('configuracoes', 'ALTERAÇÃO', f"Atualizadas configurações da unidade.")
+    registrar_log('configuracoes', 'ALTERAÇÃO', "Atualizadas configurações da unidade.")
     return jsonify({'status': 'sucesso', 'mensagem': 'Configurações de Tema e Logo aplicadas!'})
 
 @app.route('/api/logs/consultar', methods=['POST'])
@@ -784,6 +1048,9 @@ def consultar_logs():
     conn.close()
     return jsonify({'status': 'sucesso', 'logs': [dict(r) for r in rows]})
 
+# ==============================================================================
+# RELATÓRIOS EM PDF
+# ==============================================================================
 class RelatorioPDF(FPDF):
     def __init__(self, titulo, unidade_nome, periodo_str, logo_path):
         super().__init__()
@@ -944,17 +1211,23 @@ def gerar_relatorio_pdf():
     registrar_log('relatorios', 'CONSULTA', f"Emitido relatório PDF ({tipo}) de {data_ini} até {data_fim}.")
     return send_file(caminho_pdf, as_attachment=True, download_name=f"relatorio_{tipo}_{data_ini}_{data_fim}.pdf")
 
+# ==============================================================================
+# MÓDULO 2: TOTEM DE ENTRADA COM RECONHECIMENTO FACIAL NO BACKEND PYTHON
+# ==============================================================================
 @app.route('/totem')
 def totem():
     conn = get_db()
     unidades = conn.execute('SELECT id, descricao FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()
     totem_uid = session.get('totem_unidade_id')
-    colaboradores_fotos = []
+    qtd_rostos_ativos = 0
     if totem_uid:
-        cols = conn.execute('SELECT id, nome, cpf, foto_path FROM colaboradores WHERE unidade_id = ? AND ativo = 1 AND foto_path != ""', (totem_uid,)).fetchall()
-        colaboradores_fotos = [dict(c) for c in cols]
+        cols = conn.execute(
+            "SELECT face_embeddings FROM colaboradores WHERE unidade_id = ? AND ativo = 1 AND face_embeddings != '[]' AND face_embeddings IS NOT NULL",
+            (totem_uid,)
+        ).fetchall()
+        qtd_rostos_ativos = len(cols)
     conn.close()
-    return render_template('totem.html', unidades=unidades, totem_uid=totem_uid, colaboradores_fotos=colaboradores_fotos)
+    return render_template('totem.html', unidades=unidades, totem_uid=totem_uid, qtd_rostos_ativos=qtd_rostos_ativos)
 
 @app.route('/api/totem/autenticar-unidade', methods=['POST'])
 def totem_autenticar_unidade():
@@ -1010,6 +1283,112 @@ def totem_cardapio_atual():
         'refeicao': dict(refeicao) if refeicao else None
     })
 
+@app.route('/api/totem/reconhecer-frame', methods=['POST'])
+def totem_reconhecer_frame():
+    """
+    Recebe um frame da câmera do Totem, corrige a iluminação (CLAHE),
+    alinha o rosto com YuNet e compara com os vetores SFace da unidade.
+    """
+    uid = session.get('totem_unidade_id')
+    if not uid:
+        return jsonify({'status': 'sem_unidade'})
+
+    frame_b64 = request.form.get('frame_b64', '')
+    img_bgr = decodificar_base64_para_bgr(frame_b64)
+    if img_bgr is None:
+        return jsonify({'status': 'sem_rosto'})
+
+    vetor, bbox, proporcao = analisar_rosto_bgr(img_bgr)
+    if vetor is None or bbox is None:
+        return jsonify({'status': 'sem_rosto'})
+
+    # Se o rosto ocupar menos de 4.5% do quadro, pede para aproximar
+    if proporcao < 0.045:
+        return jsonify({'status': 'longe', 'bbox': bbox})
+
+    conn = get_db()
+    colabs = conn.execute('''
+        SELECT id, nome, cpf, foto_path, grupo_id, face_embeddings
+        FROM colaboradores
+        WHERE unidade_id = ? AND ativo = 1 AND face_embeddings IS NOT NULL AND face_embeddings != '[]'
+    ''', (uid,)).fetchall()
+
+    melhor_colab = None
+    melhor_score = 0.0
+
+    for c in colabs:
+        try:
+            lista_emb = json.loads(c['face_embeddings'] or '[]')
+            score = comparar_vetor_com_lista(vetor, lista_emb)
+            if score > melhor_score:
+                melhor_score = score
+                melhor_colab = c
+        except Exception:
+            continue
+
+    if not melhor_colab or melhor_score < LIMIAR_SIMILARIDADE:
+        conn.close()
+        return jsonify({
+            'status': 'desconhecido',
+            'bbox': bbox,
+            'score': round(melhor_score, 2)
+        })
+
+    # Encontrou colaborador com confiança acima do limiar! Verifica liberação da refeição:
+    agora = datetime.now()
+    hora_atual = agora.strftime('%H:%M')
+    data_hoje = agora.strftime('%Y-%m-%d')
+
+    refeicao = conn.execute('''
+        SELECT r.* FROM refeicoes r
+        JOIN refeicao_grupos rg ON rg.refeicao_id = r.id
+        JOIN grupos g ON g.id = rg.grupo_id
+        WHERE r.unidade_id = ? AND r.ativo = 1 AND g.ativo = 1
+        AND rg.grupo_id = ? AND r.hora_inicio <= ? AND r.hora_fim >= ?
+        LIMIT 1
+    ''', (uid, melhor_colab['grupo_id'], hora_atual, hora_atual)).fetchone()
+
+    if not refeicao:
+        conn.close()
+        return jsonify({
+            'status': 'bloqueado',
+            'bbox': bbox,
+            'nome': melhor_colab['nome'],
+            'mensagem': f"Olá, {melhor_colab['nome']}! Não há refeição liberada para o seu grupo neste horário ({hora_atual})."
+        })
+
+    ja_registrou = conn.execute('''
+        SELECT hora_registro FROM registros_refeicao
+        WHERE colaborador_id = ? AND refeicao_id = ? AND data_registro = ?
+    ''', (melhor_colab['id'], refeicao['id'], data_hoje)).fetchone()
+    conn.close()
+
+    if ja_registrou:
+        return jsonify({
+            'status': 'bloqueado',
+            'bbox': bbox,
+            'nome': melhor_colab['nome'],
+            'mensagem': f"{melhor_colab['nome']}, sua entrada para '{refeicao['descricao']}' já foi registrada hoje às {ja_registrou['hora_registro'][:5]}."
+        })
+
+    return jsonify({
+        'status': 'reconhecido',
+        'bbox': bbox,
+        'score': round(melhor_score, 2),
+        'colaborador': {
+            'id': melhor_colab['id'],
+            'nome': melhor_colab['nome'],
+            'cpf': melhor_colab['cpf'],
+            'foto_path': url_for('static', filename=melhor_colab['foto_path']) if melhor_colab['foto_path'] else ''
+        },
+        'refeicao': {
+            'id': refeicao['id'],
+            'descricao': refeicao['descricao'],
+            'custo': refeicao['custo']
+        },
+        'metodo': 'FACIAL'
+    })
+
 @app.route('/api/totem/identificar', methods=['POST'])
 def totem_identificar():
     uid = session.get('totem_unidade_id')
@@ -1028,7 +1407,7 @@ def totem_identificar():
 
     if not colab:
         conn.close()
-        return jsonify({'status': 'erro', 'mensagem': 'Colaborador não encontrado.'})
+        return jsonify({'status': 'erro', 'mensagem': 'Colaborador não encontrado nesta unidade.'})
 
     if colab['ativo'] == 0:
         conn.close()
@@ -1069,6 +1448,7 @@ def totem_confirmar_entrada():
     colaborador_id = request.form.get('colaborador_id', type=int)
     refeicao_id = request.form.get('refeicao_id', type=int)
     metodo = request.form.get('metodo', 'CPF')
+    frame_b64 = request.form.get('frame_b64', '')
 
     agora = datetime.now()
     data_hoje = agora.strftime('%Y-%m-%d')
@@ -1091,6 +1471,13 @@ def totem_confirmar_entrada():
                  (colaborador_id, refeicao_id, uid, data_hoje, hora_agora, ref['custo'], metodo))
     conn.commit()
     conn.close()
+
+    # APRENDIZADO CONTÍNUO: atualiza o perfil facial do colaborador com o frame confirmado
+    if frame_b64:
+        img_bgr = decodificar_base64_para_bgr(frame_b64)
+        vetor_novo, _, proporcao = analisar_rosto_bgr(img_bgr)
+        if vetor_novo and proporcao >= 0.04:
+            adicionar_vetor_aprendizado_continuo(colaborador_id, vetor_novo)
 
     registrar_log('registros_refeicao', 'INCLUSÃO', f"Entrada confirmada: '{colab['nome']}' - '{ref['descricao']}' via {metodo}.", uid)
     return jsonify({'status': 'sucesso', 'mensagem': f"Bom apetite, {colab['nome']}! Entrada registrada com sucesso."})

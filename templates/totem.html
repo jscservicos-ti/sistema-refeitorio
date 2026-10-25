@@ -1,16 +1,14 @@
 {% set ocultar_cabecalho = True %}
 {% extends 'base.html' %}
 {% block title %}Registro de Entrada - Refeitório{% endblock %}
-{% block head_extra %}
-<script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
-{% endblock %}
 
 {% block content %}
 <div id="dadosTotem"
      class="h-screen w-screen overflow-hidden flex flex-col"
-     data-colaboradores='{{ colaboradores_fotos|tojson }}'
+     data-qtd-rostos="{{ qtd_rostos_ativos }}"
      data-url-autenticar="{{ url_for('totem_autenticar_unidade') }}"
      data-url-cardapio="{{ url_for('totem_cardapio_atual') }}"
+     data-url-reconhecer="{{ url_for('totem_reconhecer_frame') }}"
      data-url-identificar="{{ url_for('totem_identificar') }}"
      data-url-confirmar="{{ url_for('totem_confirmar_entrada') }}">
 
@@ -43,28 +41,28 @@
 
     <div class="flex-1 grid grid-cols-1 lg:grid-cols-2 overflow-hidden">
 
-        <!-- METADE ESQUERDA: CÂMERA -->
+        <!-- METADE ESQUERDA: CÂMERA COM IA NO BACKEND PYTHON -->
         <div class="p-6 flex flex-col justify-center items-center bg-white border-r border-gray-200 overflow-y-auto">
             <div class="w-full max-w-lg text-center">
                 <span id="badgeRefeicaoAtual" class="inline-block px-4 py-1 rounded-full bg-emerald-100 text-emerald-800 text-sm font-bold mb-2">
                     Verificando horário de refeição...
                 </span>
-                <h2 class="text-2xl font-bold text-gray-800">Aproxime seu rosto da câmera</h2>
-                <p id="statusReconhecimento" class="text-sm text-gray-500 mt-1">Carregando IA de Reconhecimento...</p>
+                <h2 class="text-2xl font-bold text-gray-800">Olhe para a câmera ou digite seu CPF</h2>
+                <p id="statusReconhecimento" class="text-sm text-gray-500 mt-1">Iniciando câmera e motor neural...</p>
             </div>
 
-            <!-- Moldura da Câmera (Com canvas sobreposto para desenhar) -->
-            <div class="relative w-full max-w-lg min-h-[350px] lg:min-h-[450px] bg-gray-900 rounded-3xl overflow-hidden shadow-2xl border-4 border-tema-primario my-6 flex items-center justify-center">
+            <!-- Moldura da Câmera Ampliada -->
+            <div class="relative w-full max-w-lg min-h-[350px] lg:min-h-[450px] bg-gray-900 rounded-3xl overflow-hidden shadow-2xl border-4 border-tema-primario my-5 flex items-center justify-center">
                 <video id="videoCam" autoplay muted playsinline class="absolute inset-0 w-full h-full object-cover"></video>
-                <!-- O canvas é posicionado exatamente em cima do vídeo -->
-                <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full object-cover z-10"></canvas>
+                <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full pointer-events-none z-10"></canvas>
+                <canvas id="captureCanvas" class="hidden"></canvas>
             </div>
 
             <!-- Campo de CPF -->
             <form id="formIdentificarCpf" class="w-full max-w-lg space-y-3">
                 <div>
                     <label class="block text-xs font-bold uppercase text-gray-600 mb-1 text-center">
-                        Em caso de falha da câmera, digite seu CPF abaixo:
+                        Ou digite seu CPF abaixo (o sistema aprenderá seu rosto automaticamente):
                     </label>
                     <div class="flex gap-2">
                         <input type="text" id="inputCpfTotem" maxlength="14" placeholder="000.000.000-00" autocomplete="off"
@@ -95,14 +93,14 @@
             </div>
 
             <div class="mt-6 pt-4 border-t text-xs text-gray-400 flex justify-between">
-                <span>Atualização automática em tempo real</span>
+                <span>Reconhecimento Neural com Aprendizado Contínuo Ativo</span>
                 <span>Pressione <strong>Enter</strong> para confirmar ou <strong>Backspace</strong> para cancelar</span>
             </div>
         </div>
     </div>
 </div>
 
-<!-- MODAL CONFIRMAÇÃO -->
+<!-- MODAL DE CONFIRMAÇÃO (ENTER / BACKSPACE) -->
 <div id="modalConfirmarColab" class="fixed inset-0 bg-black/75 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
     <div class="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden text-center p-8">
         <div class="mx-auto w-32 h-32 rounded-full overflow-hidden border-4 border-tema-primario shadow-lg mb-4 bg-gray-100 flex items-center justify-center">
@@ -129,6 +127,7 @@
     </div>
 </div>
 
+<!-- MODAL DE UNIDADE -->
 <div id="modalUnidadeTotem" class="fixed inset-0 bg-black/75 backdrop-blur-sm {{ 'flex' if not totem_uid else 'hidden' }} items-center justify-center z-40 p-4">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
         <h3 class="text-xl font-bold text-gray-800 mb-1">Selecionar Unidade do Totem</h3>
@@ -164,13 +163,14 @@
 {% block scripts_extra %}
 <script>
     const totemEl = document.getElementById('dadosTotem');
-    const colaboradoresCadastrados = JSON.parse(totemEl.dataset.colaboradores || '[]');
+    const qtdRostosAtivos = parseInt(totemEl.dataset.qtdRostos || '0', 10);
     let aguardandoConfirmacao = false;
+    let processandoFrame = false;
     let dadosPendentes = null;
-    let faceMatcher = null;
+    let ultimoAvisoBloqueio = 0;
 
     function alternarTelaCheia() {
-        if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(() => {}); } 
+        if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(() => {}); }
         else { document.exitFullscreen().catch(() => {}); }
     }
 
@@ -228,6 +228,16 @@
     atualizarCardapioTotem();
     setInterval(atualizarCardapioTotem, 20000);
 
+    function capturarFrameAtualB64() {
+        const video = document.getElementById('videoCam');
+        const capCanvas = document.getElementById('captureCanvas');
+        if (!video || !video.videoWidth) return '';
+        capCanvas.width = 480;
+        capCanvas.height = Math.round((video.videoHeight / video.videoWidth) * 480) || 360;
+        capCanvas.getContext('2d').drawImage(video, 0, 0, capCanvas.width, capCanvas.height);
+        return capCanvas.toDataURL('image/jpeg', 0.82);
+    }
+
     async function solicitarIdentificacao({ cpf = '', colaborador_id = '', metodo = 'CPF' }) {
         if (aguardandoConfirmacao) return;
         const fd = new FormData();
@@ -242,6 +252,7 @@
         });
         const d = await r.json();
         if (d.status === 'sucesso') {
+            d.frame_b64 = capturarFrameAtualB64();
             abrirModalConfirmacaoColaborador(d);
         } else {
             exibirMensagem('Aviso de Acesso', d.mensagem, 'erro');
@@ -274,12 +285,7 @@
         }
 
         document.getElementById('modalConfirmarColab').classList.replace('hidden', 'flex');
-        
-        // Limpa o canvas de detecção ao abrir o modal
-        const canvas = document.getElementById('overlayCanvas');
-        if (canvas) {
-            canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-        }
+        limparDesenhoOverlay();
     }
 
     function cancelarConfirmacaoEntrada() {
@@ -298,6 +304,9 @@
         fd.append('colaborador_id', temp.colaborador.id);
         fd.append('refeicao_id', temp.refeicao.id);
         fd.append('metodo', temp.metodo);
+        if (temp.frame_b64) {
+            fd.append('frame_b64', temp.frame_b64);
+        }
 
         const r = await fetch(totemEl.dataset.urlConfirmar, {
             method: 'POST',
@@ -310,138 +319,107 @@
 
     window.addEventListener('keydown', function(e) {
         if (!aguardandoConfirmacao) return;
-        if (e.key === 'Enter') { e.preventDefault(); executarConfirmacaoEntrada(); } 
+        if (e.key === 'Enter') { e.preventDefault(); executarConfirmacaoEntrada(); }
         else if (e.key === 'Backspace') { e.preventDefault(); cancelarConfirmacaoEntrada(); }
     });
 
-    // ----------------------------------------------------
-    // RECONHECIMENTO FACIAL AO VIVO COM FEEDBACK (CANVAS)
-    // ----------------------------------------------------
-    async function iniciarReconhecimentoFacial() {
-        const video = document.getElementById('videoCam');
-        const canvas = document.getElementById('overlayCanvas');
-        const statusEl = document.getElementById('statusReconhecimento');
-        
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-            video.srcObject = stream;
-        } catch (err) {
-            statusEl.innerText = 'Câmera indisponível. Utilize a digitação do CPF.';
-            return;
-        }
-
-        try {
-            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-            await Promise.all([
-                faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-                faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-                faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
-            ]);
-
-            const descritores = [];
-            for (const c of colaboradoresCadastrados) {
-                try {
-                    const img = await faceapi.fetchImage('/static/' + c.foto_path);
-                    const det = await faceapi.detectSingleFace(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
-                    if (det) {
-                        // Salva o ID do colaborador e também o Nome para mostrar na tela ao vivo
-                        descritores.push(new faceapi.LabeledFaceDescriptors(`${c.id}|${c.nome}`, [det.descriptor]));
-                    }
-                } catch (e) {}
-            }
-
-            if (descritores.length > 0) {
-                faceMatcher = new faceapi.FaceMatcher(descritores, 0.52);
-                statusEl.innerText = `Reconhecimento facial ativo (${descritores.length} pessoas). Posicione seu rosto na marcação.`;
-
-                video.addEventListener('play', () => {
-                    // Ajusta o canvas para o tamanho exato do vídeo
-                    const displaySize = { width: video.clientWidth, height: video.clientHeight };
-                    faceapi.matchDimensions(canvas, displaySize);
-
-                    setInterval(async () => {
-                        if (aguardandoConfirmacao) return; // Se a tela de Enter/Backspace estiver aberta, para de buscar
-                        
-                        // Detecta o rosto no frame atual
-                        const det = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
-                        
-                        // Limpa o desenho anterior
-                        const ctx = canvas.getContext('2d');
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                        if (det) {
-                            // Redimensiona as coordenadas do rosto para o tamanho do vídeo exibido na tela
-                            const resizedDet = faceapi.resizeResults(det, displaySize);
-                            const box = resizedDet.detection.box;
-                            
-                            // Calcula a área do rosto em relação à área total do vídeo
-                            const boxArea = box.width * box.height;
-                            const videoArea = displaySize.width * displaySize.height;
-                            const proporcaoRosto = boxArea / videoArea;
-
-                            // Se o rosto estiver muito pequeno/longe (ex: ocupa menos de 8% da tela), avisa para aproximar
-                            if (proporcaoRosto < 0.08) {
-                                ctx.strokeStyle = '#ef4444'; // Vermelho
-                                ctx.lineWidth = 4;
-                                ctx.strokeRect(box.x, box.y, box.width, box.height);
-                                
-                                ctx.fillStyle = '#ef4444';
-                                ctx.fillRect(box.x, box.y - 30, box.width, 30);
-                                ctx.fillStyle = '#ffffff';
-                                ctx.font = 'bold 16px Arial';
-                                ctx.fillText('Aproxime o rosto', box.x + 5, box.y - 10);
-                                return; // Para aqui, não tenta identificar quem é ainda
-                            }
-
-                            // Se o tamanho estiver bom, tenta identificar quem é
-                            const match = faceMatcher.findBestMatch(det.descriptor);
-                            
-                            if (match && match.label !== 'unknown') {
-                                // Separamos o ID do Colaborador do Nome (que gravamos juntos lá em cima)
-                                const [colabId, colabNome] = match.label.split('|');
-
-                                // Desenha a caixa verde de SUCESSO
-                                ctx.strokeStyle = '#10b981'; // Verde
-                                ctx.lineWidth = 4;
-                                ctx.strokeRect(box.x, box.y, box.width, box.height);
-                                
-                                ctx.fillStyle = '#10b981';
-                                ctx.fillRect(box.x, box.y - 30, box.width, 30);
-                                ctx.fillStyle = '#ffffff';
-                                ctx.font = 'bold 16px Arial';
-                                ctx.fillText(colabNome, box.x + 5, box.y - 10);
-
-                                // Aguarda meio segundo (só para a pessoa ver que ficou verde e identificou o nome dela) e abre o modal
-                                setTimeout(() => {
-                                    if (!aguardandoConfirmacao) {
-                                        solicitarIdentificacao({ colaborador_id: parseInt(colabId, 10), metodo: 'FACIAL' });
-                                    }
-                                }, 500);
-
-                            } else {
-                                // Desenha caixa amarela de "Rosto não cadastrado"
-                                ctx.strokeStyle = '#f59e0b'; // Amarelo
-                                ctx.lineWidth = 4;
-                                ctx.strokeRect(box.x, box.y, box.width, box.height);
-                                
-                                ctx.fillStyle = '#f59e0b';
-                                ctx.fillRect(box.x, box.y - 30, box.width, 30);
-                                ctx.fillStyle = '#ffffff';
-                                ctx.font = 'bold 16px Arial';
-                                ctx.fillText('Desconhecido', box.x + 5, box.y - 10);
-                            }
-                        }
-                    }, 500); // Roda a detecção a cada meio segundo (500ms) para não travar o PC
-                });
-
-            } else {
-                statusEl.innerText = 'Câmera ativa. Cadastre fotos nos colaboradores para habilitar o reconhecimento automático.';
-            }
-        } catch (e) {
-            statusEl.innerText = 'Câmera ativa. Utilize o CPF caso o reconhecimento demore.';
+    // =========================================================================
+    // LOOP DE RECONHECIMENTO FACIAL NO PYTHON (YUNET + SFACE + CLAHE)
+    // =========================================================================
+    function limparDesenhoOverlay() {
+        const overlay = document.getElementById('overlayCanvas');
+        if (overlay) {
+            overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
         }
     }
 
-    window.addEventListener('load', iniciarReconhecimentoFacial);
+    function desenharCaixaRosto(bbox, corHex, legenda) {
+        const video = document.getElementById('videoCam');
+        const overlay = document.getElementById('overlayCanvas');
+        if (!video || !overlay) return;
+
+        overlay.width = video.clientWidth;
+        overlay.height = video.clientHeight;
+        const ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        const x = bbox.x * overlay.width;
+        const y = bbox.y * overlay.height;
+        const w = bbox.w * overlay.width;
+        const h = bbox.h * overlay.height;
+
+        ctx.strokeStyle = corHex;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, y, w, h);
+
+        const alturaTexto = 30;
+        const yTexto = Math.max(0, y - alturaTexto);
+        ctx.fillStyle = corHex;
+        ctx.fillRect(x, yTexto, Math.max(w, 180), alturaTexto);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 15px Segoe UI, Arial';
+        ctx.fillText(legenda, x + 8, yTexto + 20);
+    }
+
+    async function iniciarCameraTotem() {
+        const video = document.getElementById('videoCam');
+        const statusEl = document.getElementById('statusReconhecimento');
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            video.srcObject = stream;
+            statusEl.innerText = `Leitor Neural ativo (${qtdRostosAtivos} colaboradores com biometria na unidade).`;
+        } catch (err) {
+            statusEl.innerText = 'Câmera indisponível neste dispositivo. Utilize a digitação do CPF.';
+            return;
+        }
+
+        setInterval(async () => {
+            const modalSistemaAberto = !document.getElementById('modalSistema').classList.contains('hidden');
+            const modalUnidadeAberto = !document.getElementById('modalUnidadeTotem').classList.contains('hidden');
+            if (aguardandoConfirmacao || processandoFrame || modalSistemaAberto || modalUnidadeAberto) return;
+
+            const frameB64 = capturarFrameAtualB64();
+            if (!frameB64) return;
+
+            processandoFrame = true;
+            try {
+                const fd = new FormData();
+                fd.append('frame_b64', frameB64);
+
+                const resp = await fetch(totemEl.dataset.urlReconhecer, {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': obterCsrfToken() },
+                    body: fd
+                });
+                const d = await resp.json();
+
+                if (d.status === 'sem_rosto' || d.status === 'sem_unidade') {
+                    limparDesenhoOverlay();
+                } else if (d.status === 'longe') {
+                    desenharCaixaRosto(d.bbox, '#ef4444', 'Aproxime mais o rosto');
+                } else if (d.status === 'desconhecido') {
+                    desenharCaixaRosto(d.bbox, '#f59e0b', 'Não reconhecido (Digite o CPF)');
+                } else if (d.status === 'bloqueado') {
+                    desenharCaixaRosto(d.bbox, '#ef4444', d.nome || 'Acesso fora de horário');
+                    const agoraMs = Date.now();
+                    if (agoraMs - ultimoAvisoBloqueio > 5000) {
+                        ultimoAvisoBloqueio = agoraMs;
+                        exibirMensagem('Aviso de Horário / Registro', d.mensagem, 'erro');
+                    }
+                } else if (d.status === 'reconhecido') {
+                    desenharCaixaRosto(d.bbox, '#10b981', `${d.colaborador.nome}`);
+                    d.frame_b64 = frameB64;
+                    abrirModalConfirmacaoColaborador(d);
+                }
+            } catch (e) {
+            } finally {
+                processandoFrame = false;
+            }
+        }, 550);
+    }
+
+    window.addEventListener('load', iniciarCameraTotem);
 </script>
 {% endblock %}
