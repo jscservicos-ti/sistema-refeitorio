@@ -17,8 +17,17 @@
 
     {% set perms = session.get('permissoes', []) %}
 
-    <!-- ABA: DASHBOARD -->
-    {% if aba == 'dashboard' %}
+    <!-- CASO O USUÁRIO NÃO POSSUA NENHUMA PERMISSÃO ADMINISTRATIVA -->
+    {% if aba == 'sem_acesso' %}
+    <div class="bg-white p-8 rounded-2xl shadow text-center max-w-lg mx-auto my-12">
+        <i class="fa-solid fa-lock text-4xl text-amber-500 mb-3"></i>
+        <h2 class="text-xl font-bold text-gray-800">Acesso Restrito</h2>
+        <p class="text-sm text-gray-600 mt-2">Seu usuário está autenticado na unidade <strong>{{ session.get('unidade_nome') }}</strong>, mas não possui módulos administrativos habilitados. Utilize o botão <strong>Abrir Totem</strong> no topo se desejar registrar refeições.</p>
+    </div>
+    {% endif %}
+
+    <!-- ABA: DASHBOARD (EXIGE PERMISSÃO 'dashboard') -->
+    {% if aba == 'dashboard' and 'dashboard' in perms %}
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div class="bg-white p-6 rounded-xl shadow border-l-4 border-tema-primario">
             <p class="text-sm text-gray-500 font-medium">Unidade / Empresa Logada</p>
@@ -53,10 +62,10 @@
                 <span class="font-semibold text-sm">Colaboradores e Fotos</span>
             </a>
             {% endif %}
-            {% if 'relatorios' in perms %}
-            <a href="{{ url_for('admin_painel', aba='relatorios') }}" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2">
-                <i class="fa-solid fa-file-pdf text-2xl text-tema-primario"></i>
-                <span class="font-semibold text-sm">Relatórios em PDF</span>
+            {% if 'importacao' in perms %}
+            <a href="{{ url_for('admin_painel', aba='importacao') }}" class="p-4 rounded-xl border hover:shadow-md flex flex-col items-center text-center gap-2">
+                <i class="fa-solid fa-file-excel text-2xl text-tema-primario"></i>
+                <span class="font-semibold text-sm">Importar Planilhas</span>
             </a>
             {% endif %}
         </div>
@@ -118,12 +127,20 @@
                             MultiEmpresa (Acesso a todas as unidades)
                         </label>
                         {% endif %}
+                        <label class="flex items-center gap-2 font-semibold text-emerald-800 bg-emerald-50/60 p-1 rounded">
+                            <input type="checkbox" name="permissoes" value="dashboard" class="chk-perm">
+                            Acessar Painel (Dashboard Inicial)
+                        </label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_usuario" class="chk-perm"> Cadastrar Usuários</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_refeicao" class="chk-perm"> Cadastrar Refeição</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_grupo" class="chk-perm"> Cadastrar Grupos</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_colaborador" class="chk-perm"> Cadastrar Colaboradores</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_cardapio" class="chk-perm"> Cadastrar Cardápio</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="cad_unidade" class="chk-perm"> Cadastrar Unidade</label>
+                        <label class="flex items-center gap-2 font-semibold text-indigo-800 bg-indigo-50/60 p-1 rounded">
+                            <input type="checkbox" name="permissoes" value="importacao" class="chk-perm">
+                            Importação de Planilhas (Excel)
+                        </label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="relatorios" class="chk-perm"> Acessar Relatórios</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="logs" class="chk-perm"> Acessar Logs</label>
                         <label class="flex items-center gap-2"><input type="checkbox" name="permissoes" value="configuracoes" class="chk-perm"> Configurações</label>
@@ -153,10 +170,16 @@
                     {% for u in usuarios %}
                     <tr>
                         <td class="p-3">
-                            <div class="font-semibold flex items-center gap-1.5">
+                            <div class="font-semibold flex flex-wrap items-center gap-1.5">
                                 {{ u.nome }}
                                 {% if 'multiempresa' in u.permissoes %}
                                     <span class="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold uppercase">MultiEmpresa</span>
+                                {% endif %}
+                                {% if 'dashboard' in u.permissoes %}
+                                    <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase">Painel</span>
+                                {% endif %}
+                                {% if 'importacao' in u.permissoes %}
+                                    <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold uppercase">Importação</span>
                                 {% endif %}
                             </div>
                             <div class="text-xs text-gray-500">{{ u.cargo }}</div>
@@ -515,7 +538,7 @@
     </div>
     {% endif %}
 
-    <!-- ABA: CARDÁPIO (VINCULADO A UMA OU MAIS REFEIÇÕES) -->
+    <!-- ABA: CARDÁPIO -->
     {% if aba == 'cardapios' and 'cad_cardapio' in perms %}
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="bg-white p-6 rounded-xl shadow">
@@ -681,6 +704,145 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ABA: IMPORTAÇÃO EM MASSA POR PLANILHA EXCEL (.XLSX) -->
+    {% if aba == 'importacao' and 'importacao' in perms %}
+    <div class="bg-white p-6 rounded-xl shadow mb-6">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b pb-4 mb-6">
+            <div>
+                <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fa-solid fa-file-excel text-emerald-600"></i>
+                    Importação de Cadastros via Planilha Excel ({{ session.get('unidade_nome') }})
+                </h2>
+                <p class="text-sm text-gray-600 mt-1">
+                    Baixe a planilha modelo de cada tela, preencha os dados e importe ao lado. <strong>Cadastros antigos existentes nunca são alterados</strong> e registros duplicados são bloqueados automaticamente.
+                </p>
+            </div>
+            <div class="bg-amber-50 border border-amber-200 text-amber-800 text-xs px-4 py-2.5 rounded-xl font-medium">
+                <i class="fa-solid fa-circle-info mr-1"></i>
+                Dica: Se estiver começando do zero, importe primeiro <strong>Grupos</strong> e <strong>Refeições</strong>, e depois <strong>Colaboradores</strong> e <strong>Cardápios</strong>.
+            </div>
+        </div>
+
+        <div class="space-y-4">
+            <!-- 1. GRUPOS -->
+            <div class="p-4 border rounded-xl bg-gray-50/60 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div class="max-w-xl">
+                    <h3 class="font-bold text-gray-800 text-base"><i class="fa-solid fa-layer-group text-tema-primario mr-1.5"></i>1. Planilha de Grupos</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Colunas: Descrição do Grupo, Refeições Vinculadas (opcional) e Ativo (Sim/Não). Impede grupos com nomes repetidos na unidade.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <a href="{{ url_for('baixar_modelo_excel', tipo='grupos') }}" class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-download"></i> Baixar Planilha Modelo
+                    </a>
+                    <form class="form-importacao flex flex-wrap items-center gap-2" data-url="{{ url_for('processar_importacao_excel', tipo='grupos') }}">
+                        <input type="file" name="arquivo_excel" accept=".xlsx" required class="text-xs border bg-white rounded-lg p-1.5 w-56">
+                        <button type="submit" class="px-4 py-2.5 rounded-lg btn-tema text-xs font-bold shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-upload"></i> Importar Planilha
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 2. REFEIÇÕES -->
+            <div class="p-4 border rounded-xl bg-gray-50/60 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div class="max-w-xl">
+                    <h3 class="font-bold text-gray-800 text-base"><i class="fa-solid fa-clock text-tema-primario mr-1.5"></i>2. Planilha de Refeições</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Colunas: Descrição, Hora Início (HH:MM), Hora Fim (HH:MM), Custo (R$), Grupos Vinculados e Ativo. Impede refeições duplicadas na unidade.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <a href="{{ url_for('baixar_modelo_excel', tipo='refeicoes') }}" class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-download"></i> Baixar Planilha Modelo
+                    </a>
+                    <form class="form-importacao flex flex-wrap items-center gap-2" data-url="{{ url_for('processar_importacao_excel', tipo='refeicoes') }}">
+                        <input type="file" name="arquivo_excel" accept=".xlsx" required class="text-xs border bg-white rounded-lg p-1.5 w-56">
+                        <button type="submit" class="px-4 py-2.5 rounded-lg btn-tema text-xs font-bold shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-upload"></i> Importar Planilha
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 3. COLABORADORES -->
+            <div class="p-4 border rounded-xl bg-gray-50/60 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div class="max-w-xl">
+                    <h3 class="font-bold text-gray-800 text-base"><i class="fa-solid fa-id-badge text-tema-primario mr-1.5"></i>3. Planilha de Colaboradores</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Colunas: Nome Completo, CPF (11 dígitos), Nome do Grupo e Ativo. Bloqueia CPFs já existentes nesta unidade sem modificar os antigos.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <a href="{{ url_for('baixar_modelo_excel', tipo='colaboradores') }}" class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-download"></i> Baixar Planilha Modelo
+                    </a>
+                    <form class="form-importacao flex flex-wrap items-center gap-2" data-url="{{ url_for('processar_importacao_excel', tipo='colaboradores') }}">
+                        <input type="file" name="arquivo_excel" accept=".xlsx" required class="text-xs border bg-white rounded-lg p-1.5 w-56">
+                        <button type="submit" class="px-4 py-2.5 rounded-lg btn-tema text-xs font-bold shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-upload"></i> Importar Planilha
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 4. CARDÁPIOS -->
+            <div class="p-4 border rounded-xl bg-gray-50/60 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div class="max-w-xl">
+                    <h3 class="font-bold text-gray-800 text-base"><i class="fa-solid fa-plate-wheat text-tema-primario mr-1.5"></i>4. Planilha de Cardápios da Semana</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Colunas: Data (DD/MM/AAAA), Refeições Vinculadas, Proteínas, Guarnição, Saladas, Sobremesas, Bebidas e Ativo. Impede duplicidade na mesma data e refeição.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <a href="{{ url_for('baixar_modelo_excel', tipo='cardapios') }}" class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-download"></i> Baixar Planilha Modelo
+                    </a>
+                    <form class="form-importacao flex flex-wrap items-center gap-2" data-url="{{ url_for('processar_importacao_excel', tipo='cardapios') }}">
+                        <input type="file" name="arquivo_excel" accept=".xlsx" required class="text-xs border bg-white rounded-lg p-1.5 w-56">
+                        <button type="submit" class="px-4 py-2.5 rounded-lg btn-tema text-xs font-bold shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-upload"></i> Importar Planilha
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 5. USUÁRIOS -->
+            <div class="p-4 border rounded-xl bg-gray-50/60 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div class="max-w-xl">
+                    <h3 class="font-bold text-gray-800 text-base"><i class="fa-solid fa-user-shield text-tema-primario mr-1.5"></i>5. Planilha de Usuários do Sistema</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Colunas: Nome, CPF, Cargo, Ativo, Permissões e Unidades. Criados com senha padrão 123. Bloqueia CPFs já cadastrados.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <a href="{{ url_for('baixar_modelo_excel', tipo='usuarios') }}" class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-download"></i> Baixar Planilha Modelo
+                    </a>
+                    <form class="form-importacao flex flex-wrap items-center gap-2" data-url="{{ url_for('processar_importacao_excel', tipo='usuarios') }}">
+                        <input type="file" name="arquivo_excel" accept=".xlsx" required class="text-xs border bg-white rounded-lg p-1.5 w-56">
+                        <button type="submit" class="px-4 py-2.5 rounded-lg btn-tema text-xs font-bold shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-upload"></i> Importar Planilha
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 6. UNIDADES (EXCLUSIVO PARA MULTIEMPRESA) -->
+            {% if eh_multi %}
+            <div class="p-4 border rounded-xl bg-indigo-50/40 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div class="max-w-xl">
+                    <h3 class="font-bold text-gray-800 text-base"><i class="fa-solid fa-hospital text-tema-primario mr-1.5"></i>6. Planilha de Unidades / Empresas (MultiEmpresa)</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">Colunas: Descrição da Unidade e Ativo (Sim/Não). Bloqueia nomes de unidades já existentes.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <a href="{{ url_for('baixar_modelo_excel', tipo='unidades') }}" class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-download"></i> Baixar Planilha Modelo
+                    </a>
+                    <form class="form-importacao flex flex-wrap items-center gap-2" data-url="{{ url_for('processar_importacao_excel', tipo='unidades') }}">
+                        <input type="file" name="arquivo_excel" accept=".xlsx" required class="text-xs border bg-white rounded-lg p-1.5 w-56">
+                        <button type="submit" class="px-4 py-2.5 rounded-lg btn-tema text-xs font-bold shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-upload"></i> Importar Planilha
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
         </div>
     </div>
     {% endif %}
@@ -854,6 +1016,15 @@
                 enviarFormularioAjax(this, item.url, true);
             });
         }
+    });
+
+    // Submissão dos formulários de Importação de Planilhas Excel
+    document.querySelectorAll('.form-importacao').forEach(formImp => {
+        formImp.addEventListener('submit', function(e) {
+            e.preventDefault();
+            enviarFormularioAjax(this, this.dataset.url, false);
+            this.reset();
+        });
     });
 
     let streamColab = null;

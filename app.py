@@ -1,4 +1,5 @@
 import os
+import io
 import re
 import json
 import uuid
@@ -6,10 +7,12 @@ import sqlite3
 import base64
 import threading
 import urllib.request
-from datetime import datetime
+from datetime import datetime, date, time
 from functools import wraps
 import numpy as np
 import cv2
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment
 from flask import (
     Flask, render_template, request, redirect, url_for,
     session, jsonify, send_file
@@ -60,6 +63,27 @@ TEMAS = {
     'tema_10': {'nome': 'Lavanda', 'primaria': '#581c87', 'secundaria': '#9333ea', 'fundo': '#fdf4ff', 'texto': '#3b0764'}
 }
 
+# Mapeamento de abas e permissões correspondentes
+MAPA_ABAS_PERMISSOES = [
+    ('dashboard', 'dashboard'),
+    ('usuarios', 'cad_usuario'),
+    ('refeicoes', 'cad_refeicao'),
+    ('grupos', 'cad_grupo'),
+    ('colaboradores', 'cad_colaborador'),
+    ('cardapios', 'cad_cardapio'),
+    ('unidades', 'cad_unidade'),
+    ('importacao', 'importacao'),
+    ('relatorios', 'relatorios'),
+    ('logs', 'logs'),
+    ('configuracoes', 'configuracoes')
+]
+
+def obter_aba_inicial_permitida(permissoes):
+    for nome_aba, perm_necessaria in MAPA_ABAS_PERMISSOES:
+        if perm_necessaria in permissoes:
+            return nome_aba
+    return 'sem_acesso'
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -67,7 +91,7 @@ def get_db():
     return conn
 
 def limpar_cpf_cnpj(valor):
-    return re.sub(r'\D', '', valor or '')
+    return re.sub(r'\D', '', str(valor or ''))
 
 def arquivo_permitido(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -383,7 +407,6 @@ def init_db():
         )
     ''')
 
-    # Nova tabela de vínculo N:N entre Cardápios e Refeições
     c.execute('''
         CREATE TABLE IF NOT EXISTS cardapio_refeicoes (
             cardapio_id INTEGER,
@@ -394,7 +417,6 @@ def init_db():
         )
     ''')
 
-    # Migração automática: vincula cardápios antigos (que usavam hora_inicio/hora_fim) às refeições compatíveis
     cardapios_antigos = c.execute('''
         SELECT c.id, c.unidade_id, c.hora_inicio, c.hora_fim
         FROM cardapios c
@@ -462,8 +484,9 @@ def init_db():
     usr = c.execute('SELECT id, permissoes FROM usuarios ORDER BY id ASC LIMIT 1').fetchone()
     if not usr:
         todas_perms = json.dumps([
-            'multiempresa', 'cad_usuario', 'cad_refeicao', 'cad_grupo', 'cad_colaborador',
-            'cad_cardapio', 'cad_unidade', 'relatorios', 'logs', 'configuracoes'
+            'multiempresa', 'dashboard', 'importacao', 'cad_usuario', 'cad_refeicao',
+            'cad_grupo', 'cad_colaborador', 'cad_cardapio', 'cad_unidade',
+            'relatorios', 'logs', 'configuracoes'
         ])
         senha_padrao = generate_password_hash('123')
         c.execute('''
@@ -473,9 +496,14 @@ def init_db():
         usuario_id = c.lastrowid
         c.execute('INSERT INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (usuario_id, unidade_id))
     else:
+        # Garante que o primeiro Administrador receba as novas permissões (multiempresa, dashboard, importacao)
         perms_admin = json.loads(usr['permissoes'] or '[]')
-        if 'multiempresa' not in perms_admin:
-            perms_admin.append('multiempresa')
+        alterou_admin = False
+        for nova_p in ('multiempresa', 'dashboard', 'importacao'):
+            if nova_p not in perms_admin:
+                perms_admin.append(nova_p)
+                alterou_admin = True
+        if alterou_admin:
             c.execute('UPDATE usuarios SET permissoes = ? WHERE id = ?', (json.dumps(perms_admin), usr['id']))
 
     conn.commit()
@@ -630,7 +658,9 @@ def api_login():
 
     if user['primeiro_acesso'] == 1:
         return jsonify({'status': 'sucesso', 'redirect': url_for('trocar_senha')})
-    return jsonify({'status': 'sucesso', 'redirect': url_for('admin_painel')})
+
+    aba_inicial = obter_aba_inicial_permitida(perms)
+    return jsonify({'status': 'sucesso', 'redirect': url_for('admin_painel', aba=aba_inicial)})
 
 @app.route('/trocar-senha', methods=['GET'])
 @login_obrigatorio
@@ -660,7 +690,8 @@ def api_trocar_senha():
 
     session['primeiro_acesso'] = 0
     registrar_log('usuarios', 'ALTERAÇÃO', f"Usuário '{session['usuario_nome']}' redefiniu sua senha obrigatória de primeiro acesso.")
-    return jsonify({'status': 'sucesso', 'mensagem': 'Senha atualizada com sucesso!', 'redirect': url_for('admin_painel')})
+    aba_inicial = obter_aba_inicial_permitida(session.get('permissoes', []))
+    return jsonify({'status': 'sucesso', 'mensagem': 'Senha atualizada com sucesso!', 'redirect': url_for('admin_painel', aba=aba_inicial)})
 
 @app.route('/logout')
 def logout():
@@ -673,10 +704,28 @@ def logout():
 @app.route('/admin')
 @login_obrigatorio
 def admin_painel():
-    aba = request.args.get('aba', 'dashboard')
     uid = session['unidade_id']
-    eh_multi = usuario_eh_multiempresa()
     conn = get_db()
+
+    # Sincroniza as permissões atuais do usuário logado diretamente do banco
+    usr_atual = conn.execute('SELECT permissoes, ativo FROM usuarios WHERE id = ?', (session['usuario_id'],)).fetchone()
+    if not usr_atual or usr_atual['ativo'] == 0:
+        conn.close()
+        session.clear()
+        return redirect(url_for('login'))
+
+    perms = json.loads(usr_atual['permissoes'] or '[]')
+    session['permissoes'] = perms
+    eh_multi = 'multiempresa' in perms
+
+    aba_solicitada = request.args.get('aba', '')
+    mapa_dict = dict(MAPA_ABAS_PERMISSOES)
+
+    # Verifica se o usuário tem permissão para a aba solicitada (ex: dashboard); se não tiver, redireciona para a primeira permitida
+    if not aba_solicitada or (aba_solicitada in mapa_dict and mapa_dict[aba_solicitada] not in perms):
+        aba = obter_aba_inicial_permitida(perms)
+    else:
+        aba = aba_solicitada
 
     if eh_multi:
         unidades = conn.execute('SELECT * FROM unidades ORDER BY descricao').fetchall()
@@ -702,7 +751,6 @@ def admin_painel():
         mapa_ref_grupos.setdefault(v['refeicao_id'], []).append({'id': v['grupo_id'], 'nome': v['grupo_nome']})
         mapa_grupo_refs.setdefault(v['grupo_id'], []).append({'id': v['refeicao_id'], 'nome': v['refeicao_nome']})
 
-    # Mapa de Refeições vinculadas a cada Cardápio
     vinculos_cr = conn.execute('''
         SELECT cr.cardapio_id, r.id as refeicao_id, r.descricao as refeicao_nome, r.hora_inicio, r.hora_fim
         FROM cardapio_refeicoes cr
@@ -809,6 +857,508 @@ def admin_painel():
         hoje=hoje
     )
 
+# ==============================================================================
+# IMPORTAÇÃO E EXPORTAÇÃO DE PLANILHAS EXCEL (.XLSX)
+# ==============================================================================
+def interpretar_ativo_excel(valor):
+    s = str(valor or 'Sim').strip().lower()
+    if s in ('nao', 'não', '0', 'inativo', 'false', 'n'):
+        return 0
+    return 1
+
+def normalizar_hora_excel(valor):
+    if valor is None:
+        return ''
+    if isinstance(valor, datetime):
+        return valor.strftime('%H:%M')
+    if isinstance(valor, time):
+        return valor.strftime('%H:%M')
+    s = str(valor).strip()
+    m = re.match(r'^(\d{1,2}):(\d{2})', s)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return f"{hh:02d}:{mm:02d}"
+    return ''
+
+def normalizar_data_excel(valor):
+    if valor is None:
+        return ''
+    if isinstance(valor, datetime):
+        return valor.strftime('%Y-%m-%d')
+    if isinstance(valor, date):
+        return valor.strftime('%Y-%m-%d')
+    s = str(valor).strip()
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+        return s
+    m_br = re.match(r'^(\d{2})/(\d{2})/(\d{4})$', s)
+    if m_br:
+        return f"{m_br.group(3)}-{m_br.group(2)}-{m_br.group(1)}"
+    return ''
+
+@app.route('/admin/importacao/modelo/<tipo>', methods=['GET'])
+@login_obrigatorio
+@requer_permissao('importacao')
+def baixar_modelo_excel(tipo):
+    uid = session['unidade_id']
+    eh_multi = usuario_eh_multiempresa()
+
+    if tipo == 'unidades' and not eh_multi:
+        return "Apenas usuários MultiEmpresa podem baixar o modelo de unidades.", 403
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Dados_Importacao"
+
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    ex_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+
+    conn = get_db()
+    grupos_unid = [g['descricao'] for g in conn.execute('SELECT descricao FROM grupos WHERE unidade_id = ? ORDER BY descricao', (uid,)).fetchall()]
+    refs_unid = [r['descricao'] for r in conn.execute('SELECT descricao FROM refeicoes WHERE unidade_id = ? ORDER BY hora_inicio', (uid,)).fetchall()]
+    unids_todas = [u['descricao'] for u in conn.execute('SELECT descricao FROM unidades WHERE ativo = 1 ORDER BY descricao').fetchall()]
+    conn.close()
+
+    if tipo == 'usuarios':
+        colunas = ['Nome', 'CPF', 'Cargo', 'Ativo (Sim/Nao)', 'Permissoes (Separadas por virgula)', 'Unidades (Separadas por virgula)']
+        exemplo = ['Maria Souza (EXEMPLO - APAGUE ESTA LINHA)', '12345678901', 'Nutricionista', 'Sim', 'dashboard, cad_cardapio, relatorios', session.get('unidade_nome', 'Unidade Principal - Sede')]
+    elif tipo == 'refeicoes':
+        colunas = ['Descricao', 'Hora_Inicio (HH:MM)', 'Hora_Fim (HH:MM)', 'Custo (R$)', 'Grupos_Vinculados (Separados por virgula)', 'Ativo (Sim/Nao)']
+        grp_ex = grupos_unid[0] if grupos_unid else 'Administrativo'
+        exemplo = ['Almoço (EXEMPLO - APAGUE ESTA LINHA)', '11:00', '14:00', '16.50', grp_ex, 'Sim']
+    elif tipo == 'grupos':
+        colunas = ['Descricao', 'Refeicoes_Vinculadas (Separadas por virgula)', 'Ativo (Sim/Nao)']
+        ref_ex = ", ".join(refs_unid[:2]) if refs_unid else 'Almoço, Jantar'
+        exemplo = ['Plantonistas Diurnos (EXEMPLO - APAGUE ESTA LINHA)', ref_ex, 'Sim']
+    elif tipo == 'colaboradores':
+        colunas = ['Nome', 'CPF', 'Grupo', 'Ativo (Sim/Nao)']
+        grp_ex = grupos_unid[0] if grupos_unid else 'Administrativo'
+        exemplo = ['João da Silva (EXEMPLO - APAGUE ESTA LINHA)', '98765432100', grp_ex, 'Sim']
+    elif tipo == 'cardapios':
+        colunas = ['Data_Vigencia (DD/MM/AAAA)', 'Refeicoes_Vinculadas (Separadas por virgula)', 'Proteinas', 'Guarnicao', 'Saladas', 'Sobremesas', 'Bebidas', 'Ativo (Sim/Nao)']
+        ref_ex = refs_unid[0] if refs_unid else 'Almoço'
+        exemplo = [datetime.now().strftime('%d/%m/%Y'), ref_ex, 'Frango Grelhado / Iscas Aceboladas', 'Arroz, Feijão e Purê', 'Alface, Tomate e Cenoura', 'Fruta da Estação', 'Suco Natural', 'Sim']
+    elif tipo == 'unidades':
+        colunas = ['Descricao', 'Ativo (Sim/Nao)']
+        exemplo = ['Nova Unidade Filial (EXEMPLO - APAGUE ESTA LINHA)', 'Sim']
+    else:
+        return "Tipo de planilha inválido.", 400
+
+    ws.append(colunas)
+    ws.append(exemplo)
+
+    for col_num in range(1, len(colunas) + 1):
+        cell_h = ws.cell(row=1, column=col_num)
+        cell_h.fill = header_fill
+        cell_h.font = header_font
+        cell_h.alignment = Alignment(horizontal="center", vertical="center")
+
+        cell_ex = ws.cell(row=2, column=col_num)
+        cell_ex.fill = ex_fill
+
+        largura = max(len(str(colunas[col_num - 1])), len(str(exemplo[col_num - 1]))) + 6
+        ws.column_dimensions[cell_h.column_letter].width = min(largura, 50)
+
+    # 2ª Aba com Instruções e Referências da Unidade Atual
+    ws_info = wb.create_sheet(title="Instrucoes_e_Referencias")
+    ws_info.append(["INSTRUÇÕES PARA IMPORTAÇÃO SEGURA"])
+    ws_info.cell(row=1, column=1).font = Font(bold=True, size=12)
+    ws_info.append(["1. Preencha os dados na primeira aba (Dados_Importacao) a partir da linha 2 (substitua ou apague a linha de exemplo)."])
+    ws_info.append(["2. Cadastros já existentes no sistema NÃO serão alterados e registros duplicados serão ignorados automaticamente."])
+    ws_info.append(["3. Unidades de destino dos cadastros: " + session.get('unidade_nome', '')])
+    ws_info.append([])
+    ws_info.append(["GRUPOS CADASTRADOS NESTA UNIDADE:"] + (grupos_unid if grupos_unid else ["Nenhum grupo cadastrado ainda"]))
+    ws_info.append(["REFEIÇÕES CADASTRADAS NESTA UNIDADE:"] + (refs_unid if refs_unid else ["Nenhuma refeição cadastrada ainda"]))
+    if tipo == 'usuarios':
+        ws_info.append(["CÓDIGOS DE PERMISSÕES VÁLIDOS:", "dashboard, cad_usuario, cad_refeicao, cad_grupo, cad_colaborador, cad_cardapio, cad_unidade, importacao, relatorios, logs, configuracoes" + (", multiempresa" if eh_multi else "")])
+        if eh_multi:
+            ws_info.append(["UNIDADES ATIVAS DISPONÍVEIS:"] + unids_todas)
+    ws_info.column_dimensions['A'].width = 90
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=f"modelo_importacao_{tipo}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+@app.route('/api/importacao/processar/<tipo>', methods=['POST'])
+@login_obrigatorio
+@requer_permissao('importacao')
+def processar_importacao_excel(tipo):
+    uid = session['unidade_id']
+    eh_multi = usuario_eh_multiempresa()
+
+    if tipo == 'unidades' and not eh_multi:
+        return jsonify({'status': 'erro', 'mensagem': 'Apenas usuários com a permissão MultiEmpresa podem importar novas unidades.'}), 403
+
+    arquivo = request.files.get('arquivo_excel')
+    if not arquivo or not arquivo.filename.lower().endswith('.xlsx'):
+        return jsonify({'status': 'erro', 'mensagem': 'Selecione um arquivo Excel válido no formato .xlsx.'})
+
+    try:
+        wb = load_workbook(arquivo, data_only=True)
+        ws = wb.active
+    except Exception:
+        return jsonify({'status': 'erro', 'mensagem': 'Não foi possível ler a planilha. Certifique-se de enviar um arquivo .xlsx válido.'})
+
+    linhas = list(ws.iter_rows(values_only=True))
+    if len(linhas) <= 1:
+        return jsonify({'status': 'erro', 'mensagem': 'A planilha enviada está vazia (sem linhas de dados abaixo do cabeçalho).'})
+
+    inseridos = 0
+    ignorados = 0
+    detalhes = []
+
+    conn = get_db()
+
+    try:
+        # ------------------------------------------------------------------
+        # 1. IMPORTAÇÃO DE UNIDADES
+        # ------------------------------------------------------------------
+        if tipo == 'unidades':
+            existentes = {
+                r['descricao'].strip().lower()
+                for r in conn.execute('SELECT descricao FROM unidades').fetchall()
+            }
+            vistos_planilha = set()
+
+            for idx, row in enumerate(linhas[1:], start=2):
+                if not row or all(cel is None or str(cel).strip() == '' for cel in row):
+                    continue
+                descricao = str(row[0] or '').strip()
+                if not descricao or 'EXEMPLO - APAGUE ESTA LINHA' in descricao.upper():
+                    continue
+                ativo = interpretar_ativo_excel(row[1] if len(row) > 1 else 'Sim')
+                chave = descricao.lower()
+
+                if chave in existentes or chave in vistos_planilha:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Unidade '{descricao}' ignorada (já cadastrada ou duplicada na planilha).")
+                    continue
+
+                cur = conn.execute('INSERT INTO unidades (descricao, ativo) VALUES (?, ?)', (descricao, ativo))
+                novo_id = cur.lastrowid
+                conn.execute("INSERT OR IGNORE INTO configuracoes (unidade_id, tema, logo_path) VALUES (?, 'tema_1', '')", (novo_id,))
+                conn.execute('INSERT OR IGNORE INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (session['usuario_id'], novo_id))
+                vistos_planilha.add(chave)
+                inseridos += 1
+
+        # ------------------------------------------------------------------
+        # 2. IMPORTAÇÃO DE GRUPOS
+        # ------------------------------------------------------------------
+        elif tipo == 'grupos':
+            existentes = {
+                r['descricao'].strip().lower()
+                for r in conn.execute('SELECT descricao FROM grupos WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            mapa_refs = {
+                r['descricao'].strip().lower(): r['id']
+                for r in conn.execute('SELECT id, descricao FROM refeicoes WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            vistos_planilha = set()
+
+            for idx, row in enumerate(linhas[1:], start=2):
+                if not row or all(cel is None or str(cel).strip() == '' for cel in row):
+                    continue
+                descricao = str(row[0] or '').strip()
+                if not descricao or 'EXEMPLO - APAGUE ESTA LINHA' in descricao.upper():
+                    continue
+                refs_str = str(row[1] or '').strip() if len(row) > 1 else ''
+                ativo = interpretar_ativo_excel(row[2] if len(row) > 2 else 'Sim')
+                chave = descricao.lower()
+
+                if chave in existentes or chave in vistos_planilha:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Grupo '{descricao}' ignorado (já existente na unidade ou duplicado na planilha).")
+                    continue
+
+                cur = conn.execute('INSERT INTO grupos (descricao, ativo, unidade_id) VALUES (?, ?, ?)', (descricao, ativo, uid))
+                novo_grp_id = cur.lastrowid
+
+                if refs_str:
+                    for nome_ref in [x.strip().lower() for x in refs_str.split(',') if x.strip()]:
+                        if nome_ref in mapa_refs:
+                            conn.execute('INSERT OR IGNORE INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (mapa_refs[nome_ref], novo_grp_id))
+
+                vistos_planilha.add(chave)
+                inseridos += 1
+
+        # ------------------------------------------------------------------
+        # 3. IMPORTAÇÃO DE REFEIÇÕES
+        # ------------------------------------------------------------------
+        elif tipo == 'refeicoes':
+            existentes = {
+                r['descricao'].strip().lower()
+                for r in conn.execute('SELECT descricao FROM refeicoes WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            mapa_grupos = {
+                g['descricao'].strip().lower(): g['id']
+                for g in conn.execute('SELECT id, descricao FROM grupos WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            vistos_planilha = set()
+
+            for idx, row in enumerate(linhas[1:], start=2):
+                if not row or all(cel is None or str(cel).strip() == '' for cel in row):
+                    continue
+                descricao = str(row[0] or '').strip()
+                if not descricao or 'EXEMPLO - APAGUE ESTA LINHA' in descricao.upper():
+                    continue
+
+                hora_ini = normalizar_hora_excel(row[1] if len(row) > 1 else None)
+                hora_fim = normalizar_hora_excel(row[2] if len(row) > 2 else None)
+                custo_raw = str(row[3] if len(row) > 3 and row[3] is not None else '0').replace('R$', '').replace(',', '.').strip()
+                grupos_str = str(row[4] or '').strip() if len(row) > 4 else ''
+                ativo = interpretar_ativo_excel(row[5] if len(row) > 5 else 'Sim')
+
+                if not hora_ini or not hora_fim:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Refeição '{descricao}' ignorada (horário inicial ou final inválido; use HH:MM).")
+                    continue
+
+                try:
+                    custo_val = float(custo_raw)
+                except ValueError:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Refeição '{descricao}' ignorada (custo inválido).")
+                    continue
+
+                chave = descricao.lower()
+                if chave in existentes or chave in vistos_planilha:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Refeição '{descricao}' ignorada (já cadastrada na unidade ou duplicada na planilha).")
+                    continue
+
+                cur = conn.execute('''
+                    INSERT INTO refeicoes (descricao, hora_inicio, hora_fim, custo, ativo, unidade_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (descricao, hora_ini, hora_fim, custo_val, ativo, uid))
+                novo_ref_id = cur.lastrowid
+
+                if grupos_str:
+                    for nome_grp in [x.strip().lower() for x in grupos_str.split(',') if x.strip()]:
+                        if nome_grp in mapa_grupos:
+                            conn.execute('INSERT OR IGNORE INTO refeicao_grupos (refeicao_id, grupo_id) VALUES (?, ?)', (novo_ref_id, mapa_grupos[nome_grp]))
+
+                vistos_planilha.add(chave)
+                inseridos += 1
+
+        # ------------------------------------------------------------------
+        # 4. IMPORTAÇÃO DE COLABORADORES
+        # ------------------------------------------------------------------
+        elif tipo == 'colaboradores':
+            existentes = {
+                r['cpf'].strip()
+                for r in conn.execute('SELECT cpf FROM colaboradores WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            mapa_grupos = {
+                g['descricao'].strip().lower(): g['id']
+                for g in conn.execute('SELECT id, descricao FROM grupos WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            vistos_planilha = set()
+
+            for idx, row in enumerate(linhas[1:], start=2):
+                if not row or all(cel is None or str(cel).strip() == '' for cel in row):
+                    continue
+                nome = str(row[0] or '').strip()
+                if not nome or 'EXEMPLO - APAGUE ESTA LINHA' in nome.upper():
+                    continue
+
+                cpf = limpar_cpf_cnpj(row[1] if len(row) > 1 else '')
+                if len(cpf) > 0 and len(cpf) < 11:
+                    cpf = cpf.zfill(11)
+
+                nome_grp = str(row[2] or '').strip().lower() if len(row) > 2 else ''
+                ativo = interpretar_ativo_excel(row[3] if len(row) > 3 else 'Sim')
+
+                if len(cpf) != 11:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Colaborador '{nome}' ignorado (CPF inválido).")
+                    continue
+
+                if cpf in existentes or cpf in vistos_planilha:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Colaborador '{nome}' (CPF {cpf}) ignorado (CPF já cadastrado nesta unidade ou duplicado na planilha).")
+                    continue
+
+                if nome_grp not in mapa_grupos:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Colaborador '{nome}' ignorado (Grupo '{row[2] if len(row) > 2 else ''}' não encontrado nesta unidade).")
+                    continue
+
+                conn.execute('''
+                    INSERT INTO colaboradores (nome, cpf, foto_path, face_embeddings, grupo_id, ativo, unidade_id)
+                    VALUES (?, ?, '', '[]', ?, ?, ?)
+                ''', (nome, cpf, mapa_grupos[nome_grp], ativo, uid))
+
+                vistos_planilha.add(cpf)
+                inseridos += 1
+
+        # ------------------------------------------------------------------
+        # 5. IMPORTAÇÃO DE CARDÁPIOS
+        # ------------------------------------------------------------------
+        elif tipo == 'cardapios':
+            mapa_refs = {
+                r['descricao'].strip().lower(): dict(r)
+                for r in conn.execute('SELECT id, descricao, hora_inicio, hora_fim FROM refeicoes WHERE unidade_id = ?', (uid,)).fetchall()
+            }
+            # Pares (data_vigencia, refeicao_id) já ocupados na unidade
+            ocupados_db = set()
+            rows_ocup = conn.execute('''
+                SELECT c.data_vigencia, cr.refeicao_id
+                FROM cardapios c
+                JOIN cardapio_refeicoes cr ON cr.cardapio_id = c.id
+                WHERE c.unidade_id = ?
+            ''', (uid,)).fetchall()
+            for r_oc in rows_ocup:
+                ocupados_db.add((r_oc['data_vigencia'], r_oc['refeicao_id']))
+
+            for idx, row in enumerate(linhas[1:], start=2):
+                if not row or all(cel is None or str(cel).strip() == '' for cel in row):
+                    continue
+                proteinas = str(row[2] or '').strip() if len(row) > 2 else ''
+                if 'EXEMPLO - APAGUE ESTA LINHA' in proteinas.upper():
+                    continue
+
+                data_vig = normalizar_data_excel(row[0] if len(row) > 0 else None)
+                refs_str = str(row[1] or '').strip() if len(row) > 1 else ''
+                guarnicao = str(row[3] or '').strip() if len(row) > 3 else ''
+                saladas = str(row[4] or '').strip() if len(row) > 4 else ''
+                sobremesas = str(row[5] or '').strip() if len(row) > 5 else ''
+                bebidas = str(row[6] or '').strip() if len(row) > 6 else ''
+                ativo = interpretar_ativo_excel(row[7] if len(row) > 7 else 'Sim')
+
+                if not data_vig or not all([refs_str, proteinas, guarnicao, saladas, sobremesas, bebidas]):
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Cardápio ignorado (data inválida ou campos obrigatórios em branco).")
+                    continue
+
+                nomes_refs = [x.strip().lower() for x in refs_str.split(',') if x.strip()]
+                objs_ref = [mapa_refs[n] for n in nomes_refs if n in mapa_refs]
+                if not objs_ref or len(objs_ref) != len(nomes_refs):
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Cardápio de {data_vig} ignorado (uma ou mais refeições informadas não existem na unidade).")
+                    continue
+
+                # Verifica se alguma refeição nessa data já possui cardápio cadastrado (não modifica antigos)
+                conflito = any((data_vig, o['id']) in ocupados_db for o in objs_ref)
+                if conflito:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Cardápio de {data_vig} ignorado (já existe cardápio cadastrado para esta data e refeição).")
+                    continue
+
+                objs_ref.sort(key=lambda x: x['hora_inicio'])
+                cur = conn.execute('''
+                    INSERT INTO cardapios (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, unidade_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (data_vig, objs_ref[0]['hora_inicio'], objs_ref[-1]['hora_fim'], guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, uid))
+                novo_card_id = cur.lastrowid
+
+                for o in objs_ref:
+                    conn.execute('INSERT INTO cardapio_refeicoes (cardapio_id, refeicao_id) VALUES (?, ?)', (novo_card_id, o['id']))
+                    ocupados_db.add((data_vig, o['id']))
+
+                inseridos += 1
+
+        # ------------------------------------------------------------------
+        # 6. IMPORTAÇÃO DE USUÁRIOS
+        # ------------------------------------------------------------------
+        elif tipo == 'usuarios':
+            existentes = {
+                r['cpf'].strip()
+                for r in conn.execute('SELECT cpf FROM usuarios').fetchall()
+            }
+            mapa_unidades = {
+                u['descricao'].strip().lower(): u['id']
+                for u in conn.execute('SELECT id, descricao FROM unidades').fetchall()
+            }
+            perms_validas = {
+                'dashboard', 'cad_usuario', 'cad_refeicao', 'cad_grupo',
+                'cad_colaborador', 'cad_cardapio', 'cad_unidade',
+                'importacao', 'relatorios', 'logs', 'configuracoes'
+            }
+            if eh_multi:
+                perms_validas.add('multiempresa')
+
+            vistos_planilha = set()
+            senha_padrao_hash = generate_password_hash('123')
+
+            for idx, row in enumerate(linhas[1:], start=2):
+                if not row or all(cel is None or str(cel).strip() == '' for cel in row):
+                    continue
+                nome = str(row[0] or '').strip()
+                if not nome or 'EXEMPLO - APAGUE ESTA LINHA' in nome.upper():
+                    continue
+
+                cpf = limpar_cpf_cnpj(row[1] if len(row) > 1 else '')
+                if len(cpf) > 0 and len(cpf) < 11:
+                    cpf = cpf.zfill(11)
+                cargo = str(row[2] or '').strip() if len(row) > 2 else ''
+                ativo = interpretar_ativo_excel(row[3] if len(row) > 3 else 'Sim')
+                perms_str = str(row[4] or '').strip() if len(row) > 4 else 'dashboard'
+                unids_str = str(row[5] or '').strip() if len(row) > 5 else ''
+
+                if len(cpf) != 11:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Usuário '{nome}' ignorado (CPF inválido).")
+                    continue
+
+                if cpf in existentes or cpf in vistos_planilha:
+                    ignorados += 1
+                    detalhes.append(f"Linha {idx}: Usuário '{nome}' (CPF {cpf}) ignorado (CPF já cadastrado no sistema ou duplicado na planilha).")
+                    continue
+
+                perms_lista = [p.strip().lower() for p in perms_str.split(',') if p.strip().lower() in perms_validas]
+                if not perms_lista:
+                    perms_lista = ['dashboard']
+
+                if eh_multi and unids_str:
+                    unids_ids = [mapa_unidades[n.strip().lower()] for n in unids_str.split(',') if n.strip().lower() in mapa_unidades]
+                    if not unids_ids:
+                        unids_ids = [uid]
+                else:
+                    unids_ids = [uid]
+
+                cur = conn.execute('''
+                    INSERT INTO usuarios (nome, cpf, cargo, senha_hash, primeiro_acesso, ativo, permissoes)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                ''', (nome, cpf, cargo, senha_padrao_hash, ativo, json.dumps(perms_lista)))
+                novo_usr_id = cur.lastrowid
+
+                for un_id in set(unids_ids):
+                    conn.execute('INSERT OR IGNORE INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (novo_usr_id, un_id))
+
+                vistos_planilha.add(cpf)
+                inseridos += 1
+        else:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Categoria de importação desconhecida.'}), 400
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'status': 'erro', 'mensagem': f"Erro durante o processamento da planilha: {str(e)}"})
+
+    conn.close()
+    registrar_log(tipo, 'IMPORTAÇÃO', f"Importação de planilha ({tipo}): {inseridos} inseridos, {ignorados} ignorados.")
+
+    resumo_msg = f"Importação concluída! {inseridos} novo(s) cadastro(s) inserido(s) e {ignorados} linha(s) ignorada(s)."
+    if detalhes:
+        resumo_msg += "\n\nDetalhes das linhas ignoradas:\n• " + "\n• ".join(detalhes[:10])
+        if len(detalhes) > 10:
+            resumo_msg += f"\n... e mais {len(detalhes) - 10} linha(s)."
+
+    return jsonify({'status': 'sucesso', 'mensagem': resumo_msg})
+
+# ==============================================================================
+# DEMAIS ROTAS DE CADASTRO (USUÁRIOS, UNIDADES, GRUPOS, REFEIÇÕES, COLABORADORES, CARDÁPIO)
+# ==============================================================================
 @app.route('/api/usuario/salvar', methods=['POST'])
 @login_obrigatorio
 @requer_permissao('cad_usuario')
@@ -1118,7 +1668,6 @@ def salvar_colaborador():
     msg_extra = f" ({len(novos_vetores)} amostras faciais gravadas com sucesso!)" if novos_vetores else ""
     return jsonify({'status': 'sucesso', 'mensagem': f"Colaborador salvo com sucesso!{msg_extra}"})
 
-# --- SALVAR CARDÁPIO VINCULADO A UMA OU MAIS REFEIÇÕES ---
 @app.route('/api/cardapio/salvar', methods=['POST'])
 @login_obrigatorio
 @requer_permissao('cad_cardapio')
@@ -1144,8 +1693,6 @@ def salvar_cardapio():
         return jsonify({'status': 'erro', 'mensagem': 'Seleção de refeições inválida.'})
 
     conn = get_db()
-
-    # Verifica se todas as refeições selecionadas pertencem à unidade logada
     placeholders = ','.join(['?'] * len(refeicoes_ids))
     refs_validas = conn.execute(
         f'SELECT id, descricao, hora_inicio, hora_fim FROM refeicoes WHERE unidade_id = ? AND id IN ({placeholders}) ORDER BY hora_inicio',
@@ -1156,7 +1703,6 @@ def salvar_cardapio():
         conn.close()
         return jsonify({'status': 'erro', 'mensagem': 'Uma ou mais refeições selecionadas não pertencem a esta unidade.'}), 403
 
-    # Validação de conflito: verifica se já existe outro cardápio ativo na mesma data para alguma das refeições selecionadas
     if ativo == 1:
         query_conflito = f'''
             SELECT DISTINCT c.id, r.descricao as refeicao_nome, c.proteinas
@@ -1280,7 +1826,7 @@ def consultar_logs():
     return jsonify({'status': 'sucesso', 'logs': [dict(r) for r in rows]})
 
 # ==============================================================================
-# RELATÓRIOS EM PDF (ISOLADOS POR UNIDADE LOGADA)
+# RELATÓRIOS EM PDF
 # ==============================================================================
 class RelatorioPDF(FPDF):
     def __init__(self, titulo, unidade_nome, periodo_str, logo_path):
@@ -1510,9 +2056,6 @@ def totem_autenticar_unidade():
 
 @app.route('/api/totem/cardapio-atual', methods=['GET'])
 def totem_cardapio_atual():
-    """
-    Busca a refeição aberta no horário atual e o cardápio ativo vinculado a ela na data de hoje.
-    """
     uid = session.get('totem_unidade_id')
     if not uid:
         return jsonify({'status': 'sem_unidade'})

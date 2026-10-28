@@ -61,8 +61,10 @@
 
             {% if session.get('usuario_id') and session.get('primeiro_acesso') == 0 %}
             <nav class="flex flex-wrap items-center gap-1 text-sm">
-                <a href="{{ url_for('admin_painel', aba='dashboard') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-chart-pie mr-1"></i>Painel</a>
                 {% set perms = session.get('permissoes', []) %}
+                {% if 'dashboard' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='dashboard') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-chart-pie mr-1"></i>Painel</a>
+                {% endif %}
                 {% if 'cad_usuario' in perms %}
                     <a href="{{ url_for('admin_painel', aba='usuarios') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-user-shield mr-1"></i>Usuários</a>
                 {% endif %}
@@ -80,6 +82,9 @@
                 {% endif %}
                 {% if 'cad_unidade' in perms %}
                     <a href="{{ url_for('admin_painel', aba='unidades') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-hospital mr-1"></i>Unidades</a>
+                {% endif %}
+                {% if 'importacao' in perms %}
+                    <a href="{{ url_for('admin_painel', aba='importacao') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-file-excel mr-1"></i>Importação</a>
                 {% endif %}
                 {% if 'relatorios' in perms %}
                     <a href="{{ url_for('admin_painel', aba='relatorios') }}" class="px-3 py-1.5 rounded hover:bg-white/20 transition"><i class="fa-solid fa-file-pdf mr-1"></i>Relatórios</a>
@@ -104,13 +109,13 @@
 
     <!-- MODAL DE AVISO E CONFIRMAÇÃO ESTILIZADO GLOBAL -->
     <div id="modalSistema" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden transform transition-all">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden transform transition-all">
             <div id="modalSistemaHeader" class="bg-tema-primario text-white px-6 py-4 flex items-center justify-between">
                 <h3 id="modalSistemaTitulo" class="font-bold text-lg">Aviso do Sistema</h3>
                 <button type="button" onclick="fecharModalSistema()" class="text-white/80 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
             </div>
             <div class="p-6">
-                <p id="modalSistemaMensagem" class="text-gray-700 text-base leading-relaxed"></p>
+                <p id="modalSistemaMensagem" class="text-gray-700 text-sm sm:text-base leading-relaxed whitespace-pre-line max-h-80 overflow-y-auto"></p>
                 <div id="modalSistemaBotoes" class="mt-6 flex justify-end gap-3">
                     <button type="button" id="btnModalCancelar" onclick="fecharModalSistema()" class="hidden px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium">Cancelar</button>
                     <button type="button" id="btnModalConfirmar" onclick="fecharModalSistema()" class="px-5 py-2 rounded-lg btn-tema font-semibold shadow">OK</button>
