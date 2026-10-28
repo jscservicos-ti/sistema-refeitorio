@@ -515,25 +515,28 @@
     </div>
     {% endif %}
 
-    <!-- ABA: CARDÁPIO -->
+    <!-- ABA: CARDÁPIO (VINCULADO A UMA OU MAIS REFEIÇÕES) -->
     {% if aba == 'cardapios' and 'cad_cardapio' in perms %}
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="bg-white p-6 rounded-xl shadow">
-            <h2 class="text-lg font-bold mb-4">Cadastrar Cardápio</h2>
+            <h2 class="text-lg font-bold mb-4" id="tituloFormCardapio">Cadastrar Cardápio</h2>
             <form id="formCardapio" class="space-y-3">
                 <input type="hidden" name="id" id="card_id">
                 <div>
                     <label class="text-xs font-semibold uppercase text-gray-600">Data de Vigência</label>
                     <input type="date" name="data_vigencia" id="card_data" value="{{ hoje }}" required class="w-full px-3 py-2 border rounded-lg">
                 </div>
-                <div class="grid grid-cols-2 gap-2">
-                    <div>
-                        <label class="text-xs font-semibold uppercase text-gray-600">Início Vigência</label>
-                        <input type="time" name="hora_inicio" id="card_ini" required class="w-full px-3 py-2 border rounded-lg">
-                    </div>
-                    <div>
-                        <label class="text-xs font-semibold uppercase text-gray-600">Fim Vigência</label>
-                        <input type="time" name="hora_fim" id="card_fim" required class="w-full px-3 py-2 border rounded-lg">
+                <div>
+                    <label class="text-xs font-semibold uppercase text-gray-600 block mb-1">Refeições Vinculadas (Horários)</label>
+                    <div class="max-h-36 overflow-y-auto border rounded-lg p-2 space-y-1 bg-gray-50">
+                        {% for r in refeicoes %}
+                        <label class="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="checkbox" name="refeicoes_ids" value="{{ r.id }}" class="chk-card-ref">
+                            <span><strong>{{ r.descricao }}</strong> <span class="text-xs text-gray-500">({{ r.hora_inicio }} às {{ r.hora_fim }})</span></span>
+                        </label>
+                        {% else %}
+                        <p class="text-xs text-gray-400">Cadastre ao menos uma refeição na aba "Refeições" para vincular ao cardápio.</p>
+                        {% endfor %}
                     </div>
                 </div>
                 <div>
@@ -563,7 +566,10 @@
                         <option value="0">Não</option>
                     </select>
                 </div>
-                <button type="submit" class="w-full py-2.5 rounded-lg btn-tema font-semibold">Salvar Cardápio</button>
+                <div class="flex gap-2 pt-2">
+                    <button type="submit" class="flex-1 py-2.5 rounded-lg btn-tema font-semibold">Salvar Cardápio</button>
+                    <button type="button" onclick="limparFormCardapio()" class="px-3 py-2 border rounded-lg text-sm">Limpar</button>
+                </div>
             </form>
         </div>
 
@@ -572,7 +578,7 @@
             <table class="w-full text-sm text-left">
                 <thead class="bg-gray-100 text-xs uppercase">
                     <tr>
-                        <th class="p-3">Vigência</th>
+                        <th class="p-3">Data / Refeições</th>
                         <th class="p-3">Composição do Cardápio</th>
                         <th class="p-3">Ativo</th>
                         <th class="p-3 text-right">Ação</th>
@@ -580,10 +586,19 @@
                 </thead>
                 <tbody class="divide-y">
                     {% for c in cardapios %}
+                    {% set refs_vinc = mapa_cardapio_refs.get(c.id, []) %}
                     <tr>
                         <td class="p-3 whitespace-nowrap">
-                            <div class="font-bold">{{ c.data_vigencia }}</div>
-                            <div class="text-xs text-gray-500">{{ c.hora_inicio }} às {{ c.hora_fim }}</div>
+                            <div class="font-bold text-gray-800 mb-1">{{ c.data_vigencia }}</div>
+                            <div class="flex flex-wrap gap-1">
+                                {% for rv in refs_vinc %}
+                                    <span class="inline-block bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded text-[11px] font-semibold">
+                                        {{ rv.nome }} ({{ rv.hora_inicio }}-{{ rv.hora_fim }})
+                                    </span>
+                                {% else %}
+                                    <span class="text-xs text-gray-400">Sem refeição vinculada</span>
+                                {% endfor %}
+                            </div>
                         </td>
                         <td class="p-3 text-xs space-y-0.5">
                             <div><strong>Proteínas:</strong> {{ c.proteinas }}</div>
@@ -599,8 +614,7 @@
                             <button type="button"
                                 data-id="{{ c.id }}"
                                 data-vigencia="{{ c.data_vigencia }}"
-                                data-inicio="{{ c.hora_inicio }}"
-                                data-fim="{{ c.hora_fim }}"
+                                data-refeicoes='{{ refs_vinc|map(attribute="id")|list|tojson }}'
                                 data-proteinas="{{ c.proteinas }}"
                                 data-guarnicao="{{ c.guarnicao }}"
                                 data-saladas="{{ c.saladas }}"
@@ -709,7 +723,7 @@
                         <input type="radio" name="tipo" value="cardapios">
                         <div>
                             <div class="font-semibold text-sm">3. Relatório de Cardápios Ofertados</div>
-                            <div class="text-xs text-gray-500">Histórico completo dos cardápios cadastrados e vigentes no período selecionado.</div>
+                            <div class="text-xs text-gray-500">Histórico completo dos cardápios cadastrados e suas refeições vinculadas no período.</div>
                         </div>
                     </label>
                 </div>
@@ -843,7 +857,6 @@
     });
 
     let streamColab = null;
-    // 'user' = Câmera Frontal | 'environment' = Câmera Traseira
     let modoCameraColab = 'user';
 
     function atualizarTextoBotaoCamera() {
@@ -854,7 +867,6 @@
 
     async function ativarCameraColab() {
         try {
-            // Encerra o stream anterior antes de abrir a outra lente (necessário no Android/iOS)
             if (streamColab) {
                 streamColab.getTracks().forEach(track => track.stop());
                 streamColab = null;
@@ -1073,16 +1085,27 @@
 
     function editarCardapio(btn) {
         const d = btn.dataset;
+        const refIds = JSON.parse(d.refeicoes || '[]');
+        document.getElementById('tituloFormCardapio').innerText = 'Editar Cardápio #' + d.id;
         document.getElementById('card_id').value = d.id;
         document.getElementById('card_data').value = d.vigencia;
-        document.getElementById('card_ini').value = d.inicio;
-        document.getElementById('card_fim').value = d.fim;
         document.getElementById('card_proteinas').value = d.proteinas;
         document.getElementById('card_guarnicao').value = d.guarnicao;
         document.getElementById('card_saladas').value = d.saladas;
         document.getElementById('card_sobremesas').value = d.sobremesas;
         document.getElementById('card_bebidas').value = d.bebidas;
         document.getElementById('card_ativo').value = d.ativo;
+
+        document.querySelectorAll('.chk-card-ref').forEach(chk => {
+            chk.checked = refIds.includes(parseInt(chk.value, 10));
+        });
+    }
+
+    function limparFormCardapio() {
+        document.getElementById('formCardapio').reset();
+        document.getElementById('card_id').value = '';
+        document.getElementById('tituloFormCardapio').innerText = 'Cadastrar Cardápio';
+        document.querySelectorAll('.chk-card-ref').forEach(chk => { chk.checked = false; });
     }
 
     function editarUnidade(btn) {

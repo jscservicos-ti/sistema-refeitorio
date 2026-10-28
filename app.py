@@ -370,8 +370,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cardapios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             data_vigencia TEXT NOT NULL,
-            hora_inicio TEXT NOT NULL,
-            hora_fim TEXT NOT NULL,
+            hora_inicio TEXT NOT NULL DEFAULT '',
+            hora_fim TEXT NOT NULL DEFAULT '',
             guarnicao TEXT NOT NULL,
             proteinas TEXT NOT NULL,
             saladas TEXT NOT NULL,
@@ -382,6 +382,32 @@ def init_db():
             FOREIGN KEY (unidade_id) REFERENCES unidades(id)
         )
     ''')
+
+    # Nova tabela de vínculo N:N entre Cardápios e Refeições
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS cardapio_refeicoes (
+            cardapio_id INTEGER,
+            refeicao_id INTEGER,
+            PRIMARY KEY (cardapio_id, refeicao_id),
+            FOREIGN KEY (cardapio_id) REFERENCES cardapios(id) ON DELETE CASCADE,
+            FOREIGN KEY (refeicao_id) REFERENCES refeicoes(id) ON DELETE CASCADE
+        )
+    ''')
+
+    # Migração automática: vincula cardápios antigos (que usavam hora_inicio/hora_fim) às refeições compatíveis
+    cardapios_antigos = c.execute('''
+        SELECT c.id, c.unidade_id, c.hora_inicio, c.hora_fim
+        FROM cardapios c
+        LEFT JOIN cardapio_refeicoes cr ON cr.cardapio_id = c.id
+        WHERE cr.cardapio_id IS NULL AND c.hora_inicio != '' AND c.hora_fim != ''
+    ''').fetchall()
+    for ca in cardapios_antigos:
+        refs_compativeis = c.execute('''
+            SELECT id FROM refeicoes
+            WHERE unidade_id = ? AND NOT (hora_fim <= ? OR hora_inicio >= ?)
+        ''', (ca['unidade_id'], ca['hora_inicio'], ca['hora_fim'])).fetchall()
+        for r_comp in refs_compativeis:
+            c.execute('INSERT OR IGNORE INTO cardapio_refeicoes (cardapio_id, refeicao_id) VALUES (?, ?)', (ca['id'], r_comp['id']))
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS registros_refeicao (
@@ -399,7 +425,6 @@ def init_db():
         )
     ''')
 
-    # Garantir que não existam duplicidades antigas e aplicar restrição única (1 entrada por refeição por dia)
     c.execute('''
         DELETE FROM registros_refeicao
         WHERE id NOT IN (
@@ -448,7 +473,6 @@ def init_db():
         usuario_id = c.lastrowid
         c.execute('INSERT INTO usuario_unidades (usuario_id, unidade_id) VALUES (?, ?)', (usuario_id, unidade_id))
     else:
-        # Garante que o primeiro Administrador do sistema possua a permissão MultiEmpresa após a atualização
         perms_admin = json.loads(usr['permissoes'] or '[]')
         if 'multiempresa' not in perms_admin:
             perms_admin.append('multiempresa')
@@ -532,10 +556,6 @@ def login():
 
 @app.route('/api/unidades-por-cpf', methods=['POST'])
 def api_unidades_por_cpf():
-    """
-    Retorna apenas as unidades ativas às quais o CPF informado possui vínculo
-    (ou todas as unidades ativas caso o usuário possua a permissão MultiEmpresa).
-    """
     cpf = limpar_cpf_cnpj(request.form.get('cpf'))
     if len(cpf) != 11:
         return jsonify({'status': 'sucesso', 'unidades': []})
@@ -648,7 +668,7 @@ def logout():
     return redirect(url_for('login'))
 
 # ==============================================================================
-# MÓDULO 1: PAINEL ADMINISTRATIVO (ISOLADO POR UNIDADE / MULTIEMPRESA)
+# MÓDULO 1: PAINEL ADMINISTRATIVO
 # ==============================================================================
 @app.route('/admin')
 @login_obrigatorio
@@ -682,6 +702,25 @@ def admin_painel():
         mapa_ref_grupos.setdefault(v['refeicao_id'], []).append({'id': v['grupo_id'], 'nome': v['grupo_nome']})
         mapa_grupo_refs.setdefault(v['grupo_id'], []).append({'id': v['refeicao_id'], 'nome': v['refeicao_nome']})
 
+    # Mapa de Refeições vinculadas a cada Cardápio
+    vinculos_cr = conn.execute('''
+        SELECT cr.cardapio_id, r.id as refeicao_id, r.descricao as refeicao_nome, r.hora_inicio, r.hora_fim
+        FROM cardapio_refeicoes cr
+        JOIN refeicoes r ON r.id = cr.refeicao_id
+        JOIN cardapios c ON c.id = cr.cardapio_id
+        WHERE c.unidade_id = ? AND r.unidade_id = ?
+        ORDER BY r.hora_inicio ASC
+    ''', (uid, uid)).fetchall()
+
+    mapa_cardapio_refs = {}
+    for vc in vinculos_cr:
+        mapa_cardapio_refs.setdefault(vc['cardapio_id'], []).append({
+            'id': vc['refeicao_id'],
+            'nome': vc['refeicao_nome'],
+            'hora_inicio': vc['hora_inicio'],
+            'hora_fim': vc['hora_fim']
+        })
+
     colaboradores_db = conn.execute('''
         SELECT c.*, g.descricao as grupo_nome
         FROM colaboradores c
@@ -700,10 +739,9 @@ def admin_painel():
     cardapios = conn.execute('''
         SELECT * FROM cardapios
         WHERE unidade_id = ?
-        ORDER BY data_vigencia DESC, hora_inicio ASC
+        ORDER BY data_vigencia DESC, id DESC
     ''', (uid,)).fetchall()
 
-    # Listagem de usuários respeitando a permissão MultiEmpresa e a unidade logada
     if eh_multi:
         usuarios_db = conn.execute('''
             SELECT DISTINCT u.* FROM usuarios u
@@ -728,7 +766,6 @@ def admin_painel():
                 WHERE uu.usuario_id = ?
             ''', (u['id'],)).fetchall()
         else:
-            # Usuário comum visualiza apenas o vínculo com a própria unidade
             unids_u = conn.execute('''
                 SELECT u.id, u.descricao FROM usuario_unidades uu
                 JOIN unidades u ON u.id = uu.unidade_id
@@ -764,6 +801,7 @@ def admin_painel():
         refeicoes=refeicoes,
         mapa_ref_grupos=mapa_ref_grupos,
         mapa_grupo_refs=mapa_grupo_refs,
+        mapa_cardapio_refs=mapa_cardapio_refs,
         colaboradores=colaboradores,
         cardapios=cardapios,
         usuarios=usuarios,
@@ -786,7 +824,6 @@ def salvar_usuario():
     uid_logada = session['unidade_id']
     eh_multi = usuario_eh_multiempresa()
 
-    # Se não for MultiEmpresa, trava a unidade apenas na unidade logada e proíbe conceder MultiEmpresa
     if not eh_multi:
         unidades_ids = [str(uid_logada)]
         if 'multiempresa' in permissoes:
@@ -1081,14 +1118,14 @@ def salvar_colaborador():
     msg_extra = f" ({len(novos_vetores)} amostras faciais gravadas com sucesso!)" if novos_vetores else ""
     return jsonify({'status': 'sucesso', 'mensagem': f"Colaborador salvo com sucesso!{msg_extra}"})
 
+# --- SALVAR CARDÁPIO VINCULADO A UMA OU MAIS REFEIÇÕES ---
 @app.route('/api/cardapio/salvar', methods=['POST'])
 @login_obrigatorio
 @requer_permissao('cad_cardapio')
 def salvar_cardapio():
     id_card = request.form.get('id', type=int)
     data_vigencia = request.form.get('data_vigencia', '').strip()
-    hora_inicio = request.form.get('hora_inicio', '').strip()
-    hora_fim = request.form.get('hora_fim', '').strip()
+    refeicoes_ids_raw = request.form.getlist('refeicoes_ids')
     guarnicao = request.form.get('guarnicao', '').strip()
     proteinas = request.form.get('proteinas', '').strip()
     saladas = request.form.get('saladas', '').strip()
@@ -1098,40 +1135,89 @@ def salvar_cardapio():
     forcar_inativacao = request.form.get('forcar_inativacao', '0') == '1'
     uid = session['unidade_id']
 
-    if not all([data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas]):
-        return jsonify({'status': 'erro', 'mensagem': 'Preencha todos os itens do cardápio e sua vigência.'})
+    if not all([data_vigencia, guarnicao, proteinas, saladas, sobremesas, bebidas]) or not refeicoes_ids_raw:
+        return jsonify({'status': 'erro', 'mensagem': 'Preencha todos os itens do cardápio, a data de vigência e selecione ao menos uma Refeição.'})
+
+    try:
+        refeicoes_ids = [int(x) for x in refeicoes_ids_raw]
+    except ValueError:
+        return jsonify({'status': 'erro', 'mensagem': 'Seleção de refeições inválida.'})
 
     conn = get_db()
-    if ativo == 1:
-        query_conflito = '''
-            SELECT id, hora_inicio, hora_fim, proteinas FROM cardapios
-            WHERE unidade_id = ? AND data_vigencia = ? AND ativo = 1
-            AND NOT (hora_fim <= ? OR hora_inicio >= ?)
-        '''
-        params = [uid, data_vigencia, hora_inicio, hora_fim]
-        if id_card:
-            query_conflito += ' AND id != ?'
-            params.append(id_card)
 
-        conflitos = conn.execute(query_conflito, params).fetchall()
+    # Verifica se todas as refeições selecionadas pertencem à unidade logada
+    placeholders = ','.join(['?'] * len(refeicoes_ids))
+    refs_validas = conn.execute(
+        f'SELECT id, descricao, hora_inicio, hora_fim FROM refeicoes WHERE unidade_id = ? AND id IN ({placeholders}) ORDER BY hora_inicio',
+        [uid] + refeicoes_ids
+    ).fetchall()
+
+    if len(refs_validas) != len(refeicoes_ids):
+        conn.close()
+        return jsonify({'status': 'erro', 'mensagem': 'Uma ou mais refeições selecionadas não pertencem a esta unidade.'}), 403
+
+    # Validação de conflito: verifica se já existe outro cardápio ativo na mesma data para alguma das refeições selecionadas
+    if ativo == 1:
+        query_conflito = f'''
+            SELECT DISTINCT c.id, r.descricao as refeicao_nome, c.proteinas
+            FROM cardapios c
+            JOIN cardapio_refeicoes cr ON cr.cardapio_id = c.id
+            JOIN refeicoes r ON r.id = cr.refeicao_id
+            WHERE c.unidade_id = ? AND c.data_vigencia = ? AND c.ativo = 1
+            AND cr.refeicao_id IN ({placeholders})
+        '''
+        params_conflito = [uid, data_vigencia] + refeicoes_ids
+        if id_card:
+            query_conflito += ' AND c.id != ?'
+            params_conflito.append(id_card)
+
+        conflitos = conn.execute(query_conflito, params_conflito).fetchall()
         if conflitos and not forcar_inativacao:
             conn.close()
-            desc_conflito = ", ".join([f"ID #{c['id']} ({c['hora_inicio']} às {c['hora_fim']})" for c in conflitos])
-            return jsonify({'status': 'conflito', 'mensagem': f"Já existe outro cardápio ativo nesta mesma data e horário ({desc_conflito}). Deseja inativá-lo para ativar este?"})
+            desc_conflito = ", ".join([f"Cardápio #{c['id']} ({c['refeicao_nome']} - {c['proteinas']})" for c in conflitos])
+            return jsonify({
+                'status': 'conflito',
+                'mensagem': f"Já existe outro cardápio ativo na data {data_vigencia} vinculado à mesma refeição: {desc_conflito}. Deseja inativar o outro cardápio para ativar este?"
+            })
         elif conflitos and forcar_inativacao:
+            ids_inativados = set()
             for c in conflitos:
-                conn.execute('UPDATE cardapios SET ativo = 0 WHERE id = ? AND unidade_id = ?', (c['id'], uid))
+                if c['id'] not in ids_inativados:
+                    conn.execute('UPDATE cardapios SET ativo = 0 WHERE id = ? AND unidade_id = ?', (c['id'], uid))
+                    ids_inativados.add(c['id'])
+                    registrar_log('cardapios', 'ALTERAÇÃO', f"Cardápio #{c['id']} inativado automaticamente por conflito de vigência na data {data_vigencia}.")
+
+    hora_ini_resumo = refs_validas[0]['hora_inicio']
+    hora_fim_resumo = refs_validas[-1]['hora_fim']
+    nomes_refs = ", ".join([r['descricao'] for r in refs_validas])
 
     if id_card:
-        conn.execute('UPDATE cardapios SET data_vigencia=?, hora_inicio=?, hora_fim=?, guarnicao=?, proteinas=?, saladas=?, sobremesas=?, bebidas=?, ativo=? WHERE id=? AND unidade_id=?',
-                     (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, id_card, uid))
+        pertence = conn.execute('SELECT 1 FROM cardapios WHERE id = ? AND unidade_id = ?', (id_card, uid)).fetchone()
+        if not pertence:
+            conn.close()
+            return jsonify({'status': 'erro', 'mensagem': 'Cardápio não pertence a esta unidade.'}), 403
+
+        conn.execute('''
+            UPDATE cardapios
+            SET data_vigencia=?, hora_inicio=?, hora_fim=?, guarnicao=?, proteinas=?, saladas=?, sobremesas=?, bebidas=?, ativo=?
+            WHERE id=? AND unidade_id=?
+        ''', (data_vigencia, hora_ini_resumo, hora_fim_resumo, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, id_card, uid))
+        conn.execute('DELETE FROM cardapio_refeicoes WHERE cardapio_id = ?', (id_card,))
+        for r_id in refeicoes_ids:
+            conn.execute('INSERT INTO cardapio_refeicoes (cardapio_id, refeicao_id) VALUES (?, ?)', (id_card, r_id))
         conn.commit()
-        registrar_log('cardapios', 'ALTERAÇÃO', f"Alterado cardápio de {data_vigencia} ({hora_inicio}-{hora_fim}).")
+        registrar_log('cardapios', 'ALTERAÇÃO', f"Alterado cardápio de {data_vigencia} vinculado a: {nomes_refs}.")
     else:
-        conn.execute('INSERT INTO cardapios (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, unidade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                     (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, uid))
+        cur = conn.execute('''
+            INSERT INTO cardapios (data_vigencia, hora_inicio, hora_fim, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, unidade_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (data_vigencia, hora_ini_resumo, hora_fim_resumo, guarnicao, proteinas, saladas, sobremesas, bebidas, ativo, uid))
+        novo_card_id = cur.lastrowid
+        for r_id in refeicoes_ids:
+            conn.execute('INSERT INTO cardapio_refeicoes (cardapio_id, refeicao_id) VALUES (?, ?)', (novo_card_id, r_id))
         conn.commit()
-        registrar_log('cardapios', 'INCLUSÃO', f"Cadastrado cardápio de {data_vigencia} ({hora_inicio}-{hora_fim}).")
+        registrar_log('cardapios', 'INCLUSÃO', f"Cadastrado cardápio para {data_vigencia} vinculado a: {nomes_refs}.")
+
     conn.close()
     return jsonify({'status': 'sucesso', 'mensagem': 'Cardápio salvo com sucesso!'})
 
@@ -1177,7 +1263,6 @@ def consultar_logs():
     tabela = request.form.get('tabela', 'TODAS')
     uid = session['unidade_id']
 
-    # Isolamento estrito de Logs apenas para a unidade logada
     query = '''
         SELECT data_hora, usuario_nome, tabela, acao, descricao FROM logs
         WHERE unidade_id = ?
@@ -1195,7 +1280,7 @@ def consultar_logs():
     return jsonify({'status': 'sucesso', 'logs': [dict(r) for r in rows]})
 
 # ==============================================================================
-# RELATÓRIOS EM PDF (UNIFICADOS / ISOLADOS POR UNIDADE LOGADA)
+# RELATÓRIOS EM PDF (ISOLADOS POR UNIDADE LOGADA)
 # ==============================================================================
 class RelatorioPDF(FPDF):
     def __init__(self, titulo, unidade_nome, periodo_str, logo_path):
@@ -1339,14 +1424,27 @@ def gerar_relatorio_pdf():
         pdf.add_page()
         rows = conn.execute('''
             SELECT * FROM cardapios WHERE unidade_id = ? AND data_vigencia >= ? AND data_vigencia <= ?
-            ORDER BY data_vigencia ASC, hora_inicio ASC
+            ORDER BY data_vigencia ASC, id ASC
         ''', (uid, data_ini, data_fim)).fetchall()
 
         for c in rows:
+            refs_c = conn.execute('''
+                SELECT r.descricao, r.hora_inicio, r.hora_fim
+                FROM cardapio_refeicoes cr
+                JOIN refeicoes r ON r.id = cr.refeicao_id
+                WHERE cr.cardapio_id = ?
+                ORDER BY r.hora_inicio ASC
+            ''', (c['id'],)).fetchall()
+
+            if refs_c:
+                refs_str = ", ".join([f"{r['descricao']} ({r['hora_inicio']}-{r['hora_fim']})" for r in refs_c])
+            else:
+                refs_str = f"{c['hora_inicio']} às {c['hora_fim']}" if c['hora_inicio'] else "Sem refeição vinculada"
+
             pdf.set_font('Helvetica', 'B', 10)
             pdf.set_fill_color(230, 230, 230)
             status_str = "Ativo" if c['ativo'] == 1 else "Inativo"
-            pdf.cell(0, 8, txt_pdf(f"Data: {c['data_vigencia']} | Horário: {c['hora_inicio']} às {c['hora_fim']} | Status: {status_str}"), 1, 1, 'L', True)
+            pdf.cell(0, 8, txt_pdf(f"Data: {c['data_vigencia']} | Refeições: {refs_str} | Status: {status_str}"), 1, 1, 'L', True)
             pdf.set_font('Helvetica', '', 9)
             pdf.multi_cell(0, 6, txt_pdf(f"Proteínas: {c['proteinas']}\nGuarnição: {c['guarnicao']}\nSaladas: {c['saladas']}\nSobremesas: {c['sobremesas']}\nBebidas: {c['bebidas']}"), 1)
             pdf.ln(3)
@@ -1358,7 +1456,7 @@ def gerar_relatorio_pdf():
     return send_file(caminho_pdf, as_attachment=True, download_name=f"relatorio_{tipo}_{data_ini}_{data_fim}.pdf")
 
 # ==============================================================================
-# MÓDULO 2: TOTEM DE ENTRADA (1 ENTRADA POR REFEIÇÃO NO DIA)
+# MÓDULO 2: TOTEM DE ENTRADA
 # ==============================================================================
 @app.route('/totem')
 def totem():
@@ -1412,6 +1510,9 @@ def totem_autenticar_unidade():
 
 @app.route('/api/totem/cardapio-atual', methods=['GET'])
 def totem_cardapio_atual():
+    """
+    Busca a refeição aberta no horário atual e o cardápio ativo vinculado a ela na data de hoje.
+    """
     uid = session.get('totem_unidade_id')
     if not uid:
         return jsonify({'status': 'sem_unidade'})
@@ -1421,15 +1522,23 @@ def totem_cardapio_atual():
     hora_atual = agora.strftime('%H:%M')
 
     conn = get_db()
-    cardapio = conn.execute('''
-        SELECT * FROM cardapios WHERE unidade_id = ? AND data_vigencia = ? AND ativo = 1
-        AND hora_inicio <= ? AND hora_fim >= ? ORDER BY id DESC LIMIT 1
-    ''', (uid, data_hoje, hora_atual, hora_atual)).fetchone()
-
     refeicao = conn.execute('''
-        SELECT id, descricao, hora_inicio, hora_fim FROM refeicoes WHERE unidade_id = ? AND ativo = 1
-        AND hora_inicio <= ? AND hora_fim >= ? ORDER BY id DESC LIMIT 1
+        SELECT id, descricao, hora_inicio, hora_fim FROM refeicoes
+        WHERE unidade_id = ? AND ativo = 1
+        AND hora_inicio <= ? AND hora_fim >= ?
+        ORDER BY id DESC LIMIT 1
     ''', (uid, hora_atual, hora_atual)).fetchone()
+
+    cardapio = conn.execute('''
+        SELECT c.* FROM cardapios c
+        JOIN cardapio_refeicoes cr ON cr.cardapio_id = c.id
+        JOIN refeicoes r ON r.id = cr.refeicao_id
+        WHERE c.unidade_id = ? AND c.data_vigencia = ? AND c.ativo = 1
+        AND r.unidade_id = ? AND r.ativo = 1
+        AND r.hora_inicio <= ? AND r.hora_fim >= ?
+        ORDER BY c.id DESC LIMIT 1
+    ''', (uid, data_hoje, uid, hora_atual, hora_atual)).fetchone()
+
     conn.close()
 
     return jsonify({
@@ -1441,10 +1550,6 @@ def totem_cardapio_atual():
     })
 
 def validar_refeicao_colaborador_no_horario(conn, uid, colab):
-    """
-    Verifica qual refeição está aberta no horário atual para o grupo do colaborador
-    e garante que ele realize apenas 1 entrada em cada refeição por dia.
-    """
     agora = datetime.now()
     hora_atual = agora.strftime('%H:%M')
     data_hoje = agora.strftime('%Y-%m-%d')
@@ -1461,7 +1566,6 @@ def validar_refeicao_colaborador_no_horario(conn, uid, colab):
     if not refeicoes_horario:
         return None, f"Olá, {colab['nome']}! Não há refeição liberada para o seu grupo neste horário ({hora_atual})."
 
-    # Verifica se já realizou entrada na refeição vigente hoje
     ultimo_registro_msg = None
     for ref in refeicoes_horario:
         ja_registrou = conn.execute('''
